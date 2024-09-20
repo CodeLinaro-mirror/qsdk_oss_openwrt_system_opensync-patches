@@ -1,0 +1,19 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/src/default_options.h
++++ b/src/default_options.h
+@@ -360,7 +360,9 @@ be overridden at runtime with -I. 0 disables idle timeouts */
+ #define DEFAULT_IDLE_TIMEOUT 0
+ 
+ /* The default path. This will often get replaced by the shell */
++#ifndef DEFAULT_PATH
+ #define DEFAULT_PATH "/usr/bin:/bin"
++#endif
+ #define DEFAULT_ROOT_PATH "/usr/sbin:/usr/bin:/sbin:/bin"
+ 
+ #endif /* DROPBEAR_DEFAULT_OPTIONS_H_ */

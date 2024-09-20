@@ -1,0 +1,105 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+MAC learning was not able to wake up the
+poll_block(). This meant that mac_entry port
+updates had a chance to refresh the datapath
+between 0..500ms on average, depending on how it
+was timed with regards to worker threads.
+
+With ethernet clients this isn't normally a
+problem - they don't switch between ports that
+quickly so everything works fine for them.
+
+However wireless clients can roam from one port to
+another within milliseconds. Somtimes back to
+back. Any delay to datapath updates means lost
+packets.
+
+This patch makes it possible for mac learning
+revalidation to update datapath ASAP without
+waiting for revalidation.
+
+Clients roaming isn't something that happens often
+enough to have any significant impact on
+performance.
+
+This still however does not guarantee 0 packet
+loss. The control path is async to datapath
+meaning that depending on packet pacing some
+packets may still be lost depending on the amount
+of delay the control path (ovs-vswitchd) will take
+to reprogram the datapath.
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -98,6 +98,7 @@ mac_entry_set_port(struct mac_learning *
+ {
+     if (mac_entry_get_port(ml, e) != port) {
+         ml->need_revalidate = true;
++        seq_change(ml->ml_seq);
+ 
+         if (e->mlport) {
+             struct mac_learning_port *mlport = e->mlport;
+@@ -188,6 +189,7 @@ mac_learning_create(unsigned int idle_ti
+     ml = xmalloc(sizeof *ml);
+     ovs_list_init(&ml->lrus);
+     hmap_init(&ml->table);
++    ml->ml_seq = seq_create();
+     ml->secret = random_uint32();
+     ml->flood_vlans = NULL;
+     ml->idle_time = normalize_idle_time(idle_time);
+@@ -406,6 +408,7 @@ update_learning_table__(struct mac_learn
+ 
+     mac = mac_learning_insert(ml, src, vlan);
+     if (is_l2uf == true) {
++        poll_immediate_wake_at("l2uf");
+         mac_entry_set_l2uf_lock(mac);
+     } else if (mac_entry_is_l2uf_locked(mac) == true) {
+         return false;
+@@ -495,6 +498,7 @@ void
+ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ {
+     ml->need_revalidate = true;
++    seq_change(ml->ml_seq);
+     mac_entry_set_port(ml, e, NULL);
+     hmap_remove(&ml->table, &e->hmap_node);
+     ovs_list_remove(&e->lru_node);
+@@ -529,12 +533,14 @@ mac_learning_run(struct mac_learning *ml
+ 
+     need_revalidate = ml->need_revalidate;
+     ml->need_revalidate = false;
++    ml->ml_seq_last = seq_read(ml->ml_seq);
+     return need_revalidate;
+ }
+ 
+ void
+ mac_learning_wait(struct mac_learning *ml)
+ {
++    seq_wait(ml->ml_seq, ml->ml_seq_last);
+     if (hmap_count(&ml->table) > ml->max_entries
+         || ml->need_revalidate) {
+         poll_immediate_wake();
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -25,6 +25,7 @@
+ #include "ovs-thread.h"
+ #include "packets.h"
+ #include "timeval.h"
++#include "seq.h"
+ 
+ /* MAC learning table
+  * ==================
+@@ -174,6 +175,8 @@ struct mac_learning {
+     size_t max_entries;         /* Max number of learned MACs. */
+     struct ovs_refcount ref_cnt;
+     struct ovs_rwlock rwlock;
++    struct seq *ml_seq;
++    uint64_t ml_seq_last;
+     bool need_revalidate;
+ 
+     /* Fairness.

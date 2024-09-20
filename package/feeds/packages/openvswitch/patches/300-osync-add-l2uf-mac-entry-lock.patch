@@ -1,0 +1,300 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Upcalls can race will flow dump revalidation. This
+can be damaging when wireless stations with
+certain network traffic patterns are roaming.
+
+Normally wireless Access Points generate L2UF
+frames for newly associated stations. They make it
+look as if the station itself sent the frame
+towards the network. However it is the driver that
+does this. It is done with the intention to
+trigger mac learning on L2 throughout the network.
+
+However sometimes openvswitch would re-learn old
+port for a mac entry from flow dump _after_ l2uf
+upcall was processed, causing traffic to end up
+being misdirected to the wrong port. Until the
+client generated traffic of its own again it
+wouldn't get any new data after roaming. This
+yielded non-deterministic packet loss when clients
+roaming.
+
+This patch adds a similar locking mechanism to
+Gratituous ARP - when L2UF is seen mac entry
+updates are blocked until another L2UF frame is
+seen, or until after the locking period expires.
+This makes sure the mac learning database does not
+get populated with incorrect entries from delayed
+revalidation workers.
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2718,22 +2718,23 @@ is_admissible(struct xlate_ctx *ctx, str
+ static bool
+ update_learning_table__(const struct xbridge *xbridge,
+                         struct xbundle *in_xbundle, struct eth_addr dl_src,
+-                        int vlan, bool is_grat_arp)
++                        int vlan, bool is_grat_arp, bool is_l2uf)
+ {
+     return (in_xbundle == &ofpp_none_bundle
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,
+                                     is_grat_arp,
+                                     in_xbundle->bond != NULL,
++                                    is_l2uf,
+                                     in_xbundle->ofbundle));
+ }
+ 
+ static void
+ update_learning_table(const struct xlate_ctx *ctx,
+                       struct xbundle *in_xbundle, struct eth_addr dl_src,
+-                      int vlan, bool is_grat_arp)
++                      int vlan, bool is_grat_arp, bool is_l2uf)
+ {
+     if (!update_learning_table__(ctx->xbridge, in_xbundle, dl_src, vlan,
+-                                 is_grat_arp)) {
++                                 is_grat_arp, is_l2uf)) {
+         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+                            "on port %s in VLAN %d",
+                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
+@@ -3141,6 +3142,8 @@ xlate_normal(struct xlate_ctx *ctx)
+         return;
+     }
+ 
++    bool is_l2uf = dp_packet_is_l2uf(ctx->xin->packet);
++
+     /* Learn source MAC. */
+     bool is_grat_arp = is_gratuitous_arp(flow, wc);
+     if (ctx->xin->allow_side_effects
+@@ -3148,7 +3151,7 @@ xlate_normal(struct xlate_ctx *ctx)
+         && in_port && in_port->pt_mode != NETDEV_PT_LEGACY_L3
+     ) {
+         update_learning_table(ctx, in_xbundle, flow->dl_src, vlan,
+-                              is_grat_arp);
++                              is_grat_arp, is_l2uf);
+     }
+     if (ctx->xin->xcache && in_xbundle != &ofpp_none_bundle) {
+         struct xc_entry *entry;
+@@ -3161,6 +3164,7 @@ xlate_normal(struct xlate_ctx *ctx)
+             entry->normal.dl_src = flow->dl_src;
+             entry->normal.vlan = vlan;
+             entry->normal.is_gratuitous_arp = is_grat_arp;
++            entry->normal.is_l2uf = is_l2uf;
+         }
+     }
+ 
+@@ -8440,7 +8444,7 @@ ofp_port_to_xbundle(const struct ofproto
+ void
+ xlate_mac_learning_update(const struct ofproto_dpif *ofproto,
+                           ofp_port_t in_port, struct eth_addr dl_src,
+-                          int vlan, bool is_grat_arp)
++                          int vlan, bool is_grat_arp, bool is_l2uf)
+ {
+     struct xbundle *xbundle = NULL;
+ 
+@@ -8450,7 +8454,7 @@ xlate_mac_learning_update(const struct o
+     }
+ 
+     update_learning_table__(xbundle->xbridge,
+-                            xbundle, dl_src, vlan, is_grat_arp);
++                            xbundle, dl_src, vlan, is_grat_arp, is_l2uf);
+ }
+ 
+ bool
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -356,6 +356,7 @@ mac_learning_insert__(struct mac_learnin
+         e->mac = src_mac;
+         e->vlan = vlan;
+         e->grat_arp_lock = TIME_MIN;
++        e->l2uf_lock = TIME_MIN;
+         e->mlport = NULL;
+         e->expires = 0;
+         if (!is_static) {
+@@ -456,7 +457,7 @@ static bool
+ is_mac_learning_update_needed(const struct mac_learning *ml,
+                               struct eth_addr src, int vlan,
+                               bool is_gratuitous_arp, bool is_bond,
+-                              void *in_port)
++                              bool is_l2uf, void *in_port)
+     OVS_REQ_RDLOCK(ml->rwlock)
+ {
+     struct mac_entry *mac;
+@@ -466,6 +467,10 @@ is_mac_learning_update_needed(const stru
+         return false;
+     }
+ 
++    if (is_l2uf == true) {
++        return true;
++    }
++
+     mac = mac_learning_lookup(ml, src, vlan);
+     /* If mac entry is missing it needs to be added to fdb. */
+     if (!mac) {
+@@ -519,7 +524,7 @@ is_mac_learning_update_needed(const stru
+ static bool
+ update_learning_table__(struct mac_learning *ml, struct eth_addr src,
+                         int vlan, bool is_gratuitous_arp, bool is_bond,
+-                        void *in_port)
++                        bool is_l2uf, void *in_port)
+     OVS_REQ_WRLOCK(ml->rwlock)
+ {
+     struct mac_entry *mac;
+@@ -529,6 +534,11 @@ update_learning_table__(struct mac_learn
+     }
+ 
+     mac = mac_learning_insert(ml, src, vlan);
++    if (is_l2uf == true) {
++        mac_entry_set_l2uf_lock(mac);
++    } else if (mac_entry_is_l2uf_locked(mac) == true) {
++        return false;
++    }
+     if (is_gratuitous_arp) {
+         /* Gratuitous ARP packets received over non-bond interfaces could be
+          * reflected back over bond members.  We don't want to learn from these
+@@ -565,7 +575,7 @@ update_learning_table__(struct mac_learn
+ bool
+ mac_learning_update(struct mac_learning *ml, struct eth_addr src,
+                     int vlan, bool is_gratuitous_arp, bool is_bond,
+-                    void *in_port)
++                    bool is_l2uf, void *in_port)
+     OVS_EXCLUDED(ml->rwlock)
+ {
+     bool need_update;
+@@ -577,14 +587,14 @@ mac_learning_update(struct mac_learning
+         ovs_rwlock_rdlock(&ml->rwlock);
+         need_update = is_mac_learning_update_needed(ml, src, vlan,
+                                                     is_gratuitous_arp, is_bond,
+-                                                    in_port);
++                                                    is_l2uf, in_port);
+         ovs_rwlock_unlock(&ml->rwlock);
+ 
+         if (need_update) {
+             /* Slow path: MAC learning table might need an update. */
+             ovs_rwlock_wrlock(&ml->rwlock);
+             updated = update_learning_table__(ml, src, vlan, is_gratuitous_arp,
+-                                              is_bond, in_port);
++                                              is_bond, is_l2uf, in_port);
+             ovs_rwlock_unlock(&ml->rwlock);
+         }
+     }
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -106,12 +106,18 @@ struct mac_learning;
+  * relearning based on a reflection from a bond member. */
+ #define MAC_GRAT_ARP_LOCK_TIME 5
+ 
++/* Time, in seconds, to lock an entry updated by a L2UF frame to avoid
++ * relearning from revalidation after flow dump which can race against upcalls.
++ */
++#define MAC_L2UF_LOCK_TIME 5
++
+ /* A MAC learning table entry.
+  * Guarded by owning 'mac_learning''s rwlock. */
+ struct mac_entry {
+     struct hmap_node hmap_node; /* Node in a mac_learning hmap. */
+     time_t expires;             /* Expiration time. */
+     time_t grat_arp_lock;       /* Gratuitous ARP lock expiration time. */
++    time_t l2uf_lock;           /* L2UF lock expiration time. */
+     struct eth_addr mac;        /* Known MAC address. */
+     uint16_t vlan;              /* VLAN tag. */
+ 
+@@ -156,6 +162,16 @@ static inline bool mac_entry_is_grat_arp
+     return time_now() < mac->grat_arp_lock;
+ }
+ 
++static inline void mac_entry_set_l2uf_lock(struct mac_entry *mac)
++{
++    mac->l2uf_lock = time_now() + MAC_L2UF_LOCK_TIME;
++}
++
++static inline bool mac_entry_is_l2uf_locked(const struct mac_entry *mac)
++{
++    return time_now() < mac->l2uf_lock;
++}
++
+ /* MAC learning table. */
+ struct mac_learning {
+     struct hmap table;          /* Learning table. */
+@@ -225,7 +241,7 @@ struct mac_entry *mac_learning_insert(st
+     OVS_REQ_WRLOCK(ml->rwlock);
+ bool mac_learning_update(struct mac_learning *ml, struct eth_addr src,
+                          int vlan, bool is_gratuitous_arp, bool is_bond,
+-                         void *in_port)
++                         bool is_l2uf, void *in_port)
+     OVS_EXCLUDED(ml->rwlock);
+ bool mac_learning_add_static_entry(struct mac_learning *ml,
+                                    const struct eth_addr src,
+--- a/ofproto/ofproto-dpif-xlate-cache.h
++++ b/ofproto/ofproto-dpif-xlate-cache.h
+@@ -101,6 +101,7 @@ struct xc_entry {
+             struct eth_addr dl_src;
+             int vlan;
+             bool is_gratuitous_arp;
++            bool is_l2uf;
+         } normal;
+         struct {
+             struct rule_dpif *rule;
+--- a/ofproto/ofproto-dpif-xlate.h
++++ b/ofproto/ofproto-dpif-xlate.h
+@@ -225,7 +225,7 @@ int xlate_send_packet(const struct ofpor
+ 
+ void xlate_mac_learning_update(const struct ofproto_dpif *ofproto,
+                                ofp_port_t in_port, struct eth_addr dl_src,
+-                               int vlan, bool is_grat_arp);
++                               int vlan, bool is_grat_arp, bool is_l2uf);
+ bool xlate_add_static_mac_entry(const struct ofproto_dpif *,
+                                 ofp_port_t in_port,
+                                 struct eth_addr dl_src, int vlan);
+--- a/ofproto/ofproto-dpif-xlate-cache.c
++++ b/ofproto/ofproto-dpif-xlate-cache.c
+@@ -137,7 +137,8 @@ xlate_push_stats_entry(struct xc_entry *
+                                   entry->normal.in_port,
+                                   entry->normal.dl_src,
+                                   entry->normal.vlan,
+-                                  entry->normal.is_gratuitous_arp);
++                                  entry->normal.is_gratuitous_arp,
++                                  entry->normal.is_l2uf);
+         break;
+     case XC_FIN_TIMEOUT:
+         if (stats->tcp_flags & (TCP_FIN | TCP_RST)) {
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -1085,6 +1085,32 @@ dp_packet_l4_checksum_bad(const struct d
+             DP_PACKET_OL_RX_L4_CKSUM_BAD;
+ }
+ 
++static inline bool
++dp_packet_is_l2uf(const struct dp_packet *packet)
++{
++    if (packet == NULL) return false;
++    if (packet->packet_type != htonl(PT_ETH)) return false;
++
++    const unsigned char *data = dp_packet_data(packet);
++    const struct eth_addr *da = (const void *)data;
++    const ovs_be16 *type = (const void *)(data + (ETH_ADDR_LEN * 2));
++    uint32_t size = dp_packet_size(packet);
++
++    if (size < 20) return false;
++
++    while (size >= sizeof(*type) && eth_type_vlan(*type)) {
++        type += 1;
++        size -= sizeof(*type);
++    }
++
++    if (size < sizeof(*type)) return false;
++
++    const bool is_l2uf_normal = (ntohs(*type) == 6);
++    const bool is_l2uf_qca = (ntohs(*type) == 8);
++
++    return eth_addr_is_broadcast(*da) && (is_l2uf_normal || is_l2uf_qca);
++}
++
+ #ifdef  __cplusplus
+ }
+ #endif

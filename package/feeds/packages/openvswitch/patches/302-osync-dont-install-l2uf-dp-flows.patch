@@ -1,0 +1,49 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+L2UF packets are special. They are intended to
+force mac learning for wireless clients that are
+roaming between Access Points on the same L2
+network.
+
+DP entries have a default lifespan of 10s of idle
+time - after which revalidation will remove them.
+
+Without this change L2UF would get its own DP
+entries. If client was roaming quickly enough only
+flow dump stats could've updated mac learning -
+which happens every 500ms. This means it was
+possible to end up losing packets in that time
+slot.
+
+Not having a DP entry for these frames means they
+will always generate an upcall that will
+immediatelly update mac learnin and then update
+non-L2UF DP entries if necessary.
+
+This doesn't guarantee 0 packet loss because
+non-L2UF DP entries will still need to be updated
+sometime after upcall is generated. This means
+some packets may still take the wrong datapath and
+end up being lost as far as the wireless client is
+concerned. This does however reduce chances of
+packet loss in rapid back to back roaming corner
+case significantly.
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -1223,6 +1223,10 @@ should_install_flow(struct udpif *udpif,
+         return false;
+     }
+ 
++    if (dp_packet_is_l2uf(upcall->packet) == true) {
++        return false;
++    }
++
+     return true;
+ }
+ 

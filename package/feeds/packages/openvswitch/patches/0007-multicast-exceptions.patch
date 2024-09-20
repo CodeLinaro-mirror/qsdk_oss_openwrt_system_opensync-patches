@@ -1,0 +1,365 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Added support for user defnied multicast exceptions, which allows the user to
+make the packets that match these exceptions always flood. This behaviour is
+configurable through the OVS bridge other_config variable. IPv4 and IPv6 are
+both supported. Note that IGMP and MLD are not subject to these exceptions.
+
+IPv6 example: "ovs-vsctl set Bridge br-home \
+	other_config:mcast-ipv6-exceptions=ff01::/16,ff02::5/128"
+IPv4 example: "ovs-vsctl set Bridge br-home \
+	other_config:mcast-ipv4-exceptions=1.1.1.1/8,192.168.25.0/24"
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+Index: b/ofproto/ofproto.h
+===================================================================
+--- a/ofproto/ofproto.h
++++ b/ofproto/ofproto.h
+@@ -189,6 +189,12 @@ struct ofproto_mcast_snooping_settings {
+     unsigned int idle_time;     /* Entry is removed after the idle time
+                                  * in seconds. */
+     unsigned int max_entries;   /* Size of the multicast snooping table. */
++
++    struct mcast_ipv4_exception *ipv4_exceptions;
++    size_t ipv4_exceptions_count;
++
++    struct mcast_ipv6_exception *ipv6_exceptions;
++    size_t ipv6_exceptions_count;
+ };
+ 
+ struct ofproto_mcast_snooping_port_settings {
+Index: b/vswitchd/bridge.c
+===================================================================
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -1924,6 +1924,93 @@ bridge_configure_mac_table(struct bridge
+     ofproto_set_mac_table_config(br->ofproto, idle_time, mac_table_size);
+ }
+ 
++static int
++get_ch_count(char *str, char c)
++{
++    int i, count = 0;
++
++    for (i = 0; str[i] != '\0'; i++) {
++        if (str[i] == c)
++            count++;
++    }
++
++    return count;
++}
++
++static size_t
++parse_ipv4_exceptions(struct mcast_ipv4_exception **dest, char *input)
++{
++    int count = 0;
++    int address_count = get_ch_count(input, ',') + 1;
++    char *error = NULL;
++    char *new_str = strdup(input);
++    char *token = strtok(new_str, ",");
++    struct mcast_ipv4_exception *exceptions;
++
++    *dest = exceptions = malloc(sizeof(struct mcast_ipv4_exception) * address_count);
++    if (exceptions == NULL) {
++        free(new_str);
++        return 0;
++    }
++
++    while (token != NULL) {
++        error = ip_parse_masked(token, &exceptions[count].addr, &exceptions[count].mask);
++        token = strtok(NULL, ",");
++
++        if (error) {
++            free(error);
++            continue;
++        }
++        count++;
++    }
++
++    /* If no valid address was parsed (count == 0), we can free exceptions and return null. */
++    if (count < 1) {
++        free(exceptions);
++        *dest = NULL;
++    }
++
++    free(new_str);
++    return count;
++}
++
++static size_t
++parse_ipv6_exceptions(struct mcast_ipv6_exception **dest, char *input)
++{
++    int count = 0;
++    int address_count = get_ch_count(input, ',') + 1;
++    char *error = NULL;
++    char *new_str = strdup(input);
++    char *token = strtok(new_str, ",");
++    struct mcast_ipv6_exception *exceptions;
++
++    *dest = exceptions = malloc(sizeof(struct mcast_ipv6_exception) * address_count);
++    if (exceptions == NULL) {
++        free(new_str);
++        return 0;
++    }
++
++    while (token != NULL) {
++        error = ipv6_parse_masked(token, &exceptions[count].addr, &exceptions[count].mask);
++        token = strtok(NULL, ",");
++
++        if (error) {
++            free(error);
++            continue;
++        }
++        count++;
++    }
++
++    /* If no valid address was parsed (count == 0), we can free exceptions and return null. */
++    if (count < 1) {
++        free(exceptions);
++        *dest = NULL;
++    }
++
++    free(new_str);
++    return count;
++}
++
+ /* Set multicast snooping table configuration for 'br'. */
+ static void
+ bridge_configure_mcast_snooping(struct bridge *br)
+@@ -1933,6 +2020,7 @@ bridge_configure_mcast_snooping(struct b
+     } else {
+         struct port *port;
+         struct ofproto_mcast_snooping_settings br_s;
++        char *config_str;
+ 
+         const struct smap *oc = &br->cfg->other_config;
+         int idle_time = smap_get_int(oc, "mcast-snooping-aging-time", 0);
+@@ -1945,6 +2033,22 @@ bridge_configure_mcast_snooping(struct b
+         br_s.flood_unreg = !smap_get_bool(
+             oc, "mcast-snooping-disable-flood-unregistered", false);
+ 
++        config_str = smap_get(&br->cfg->other_config, "mcast-ipv4-exceptions");
++        if (config_str) {
++            br_s.ipv4_exceptions_count = parse_ipv4_exceptions(&br_s.ipv4_exceptions, config_str);printf("Set IPv4 exceptions\n");
++        } else {
++            br_s.ipv4_exceptions_count = 0;
++            br_s.ipv4_exceptions = NULL;
++        }
++
++        config_str = smap_get(&br->cfg->other_config, "mcast-ipv6-exceptions");
++        if (config_str) {
++            br_s.ipv6_exceptions_count = parse_ipv6_exceptions(&br_s.ipv6_exceptions, config_str);printf("Set IPv6 exceptions\n");
++        } else {
++            br_s.ipv6_exceptions_count = 0;
++            br_s.ipv6_exceptions = NULL;
++        }
++
+         /* Configure multicast snooping on the bridge */
+         if (ofproto_set_mcast_snooping(br->ofproto, &br_s)) {
+             VLOG_ERR("bridge %s: could not enable multicast snooping",
+Index: b/lib/mcast-snooping.h
+===================================================================
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -101,6 +101,16 @@ struct mcast_port_bundle {
+     void *port;
+ };
+ 
++struct mcast_ipv4_exception {
++    ovs_be32 addr;   /* Exception IP address. */
++    ovs_be32 mask;   /* Exception IP address mask. */
++};
++
++struct mcast_ipv6_exception {
++    struct in6_addr addr;     /* Exception IP address. */
++    struct in6_addr mask;     /* Exception IP address mask. */
++};
++
+ /* Multicast snooping table. */
+ struct mcast_snooping {
+     /* Snooping/learning table. */
+@@ -138,6 +148,12 @@ struct mcast_snooping {
+      * ports, otherwise send them to ports connected to multicast routers. */
+     bool flood_unreg;
+ 
++    struct mcast_ipv4_exception *ipv4_exceptions;
++    size_t ipv4_exceptions_count;
++
++    struct mcast_ipv6_exception *ipv6_exceptions;
++    size_t ipv6_exceptions_count;
++
+     struct ovs_refcount ref_cnt;
+     struct ovs_rwlock rwlock;
+ };
+@@ -159,6 +175,14 @@ void mcast_snooping_wait(struct mcast_sn
+ void mcast_snooping_set_idle_time(struct mcast_snooping *ms,
+                                   unsigned int idle_time)
+     OVS_REQ_WRLOCK(ms->rwlock);
++void mcast_snooping_set_ipv4_exceptions(struct mcast_snooping *ms,
++                                        struct mcast_ipv4_exception *exceptions,
++                                        unsigned int count)
++    OVS_REQ_WRLOCK(ms->rwlock);
++void mcast_snooping_set_ipv6_exceptions(struct mcast_snooping *ms,
++                                        struct mcast_ipv6_exception *exceptions,
++                                        unsigned int count)
++    OVS_REQ_WRLOCK(ms->rwlock);
+ void mcast_snooping_set_max_entries(struct mcast_snooping *ms,
+                                     size_t max_entries)
+     OVS_REQ_WRLOCK(ms->rwlock);
+@@ -211,6 +235,9 @@ bool mcast_snooping_add_mrouter(struct m
+ bool mcast_snooping_is_query(ovs_be16 igmp_type);
+ bool mcast_snooping_is_membership(ovs_be16 igmp_type);
+ 
++bool is_mcast_exception(const struct mcast_snooping *ms, struct flow *flow)
++    OVS_REQ_RDLOCK(ms->rwlock);
++
+ /* Flush. */
+ void mcast_snooping_mdb_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush(struct mcast_snooping *ms);
+Index: b/lib/mcast-snooping.c
+===================================================================
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -150,6 +150,46 @@ group_get_lru(const struct mcast_snoopin
+     }
+ }
+ 
++bool
++is_mcast_exception(const struct mcast_snooping *ms, struct flow *flow)
++    OVS_REQ_RDLOCK(ms->rwlock)
++{
++    int i;
++
++    if (get_dl_type(flow) == htons(ETH_TYPE_IP)) {
++        struct mcast_ipv4_exception *e;
++
++        for (i = 0; i < ms->ipv4_exceptions_count; i++) {
++            e = &ms->ipv4_exceptions[i];
++
++            if (e->addr == (flow->nw_dst & e->mask)) {
++                return true;
++            }
++        }
++    } else {
++        struct mcast_ipv6_exception *e;
++        uint32_t *addr;
++        uint32_t *mask;
++        uint32_t *dst_addr;
++
++        for (i = 0; i < ms->ipv6_exceptions_count; i++) {
++            e = &ms->ipv6_exceptions[i];
++            addr = e->addr.__in6_union.__s6_addr32;
++            mask = e->mask.__in6_union.__s6_addr32;
++            dst_addr = flow->ipv6_dst.__in6_union.__s6_addr32;
++
++            if (addr[0] == (dst_addr[0] & mask[0]) &&
++                addr[1] == (dst_addr[1] & mask[1]) &&
++                addr[2] == (dst_addr[2] & mask[2]) &&
++                addr[3] == (dst_addr[3] & mask[3])) {
++                return true;
++            }
++        }
++    }
++
++    return false;
++}
++
+ static unsigned int
+ normalize_idle_time(unsigned int idle_time)
+ {
+@@ -177,6 +217,10 @@ mcast_snooping_create(void)
+     ms->max_entries = MCAST_DEFAULT_MAX_ENTRIES;
+     ms->need_revalidate = false;
+     ms->flood_unreg = true;
++    ms->ipv4_exceptions = NULL;
++    ms->ipv4_exceptions_count = 0;
++    ms->ipv6_exceptions = NULL;
++    ms->ipv6_exceptions_count = 0;
+     ovs_refcount_init(&ms->ref_cnt);
+     ovs_rwlock_init(&ms->rwlock);
+     return ms;
+@@ -203,6 +247,8 @@ mcast_snooping_unref(struct mcast_snoopi
+     if (ovs_refcount_unref_relaxed(&ms->ref_cnt) == 1) {
+         mcast_snooping_flush(ms);
+         hmap_destroy(&ms->table);
++        free(ms->ipv4_exceptions);
++        free(ms->ipv6_exceptions);
+         ovs_rwlock_destroy(&ms->rwlock);
+         free(ms);
+     }
+@@ -229,6 +275,45 @@ mcast_snooping_set_idle_time(struct mcas
+     }
+ }
+ 
++/* Sets mcast igmp exceptions. */
++void
++mcast_snooping_set_ipv4_exceptions(struct mcast_snooping *ms, struct mcast_ipv4_exception *exceptions,
++                                   unsigned int count)
++    OVS_REQ_WRLOCK(ms->rwlock)
++{
++    int i;
++    for (i = 0; i < count; i++) {
++        exceptions[i].addr &= exceptions[i].mask;
++    }
++
++    if (ms->ipv4_exceptions)
++        free(ms->ipv4_exceptions);
++    ms->ipv4_exceptions_count = count;
++    ms->ipv4_exceptions = exceptions;
++}
++
++/* Sets mcast mld exceptions. */
++void
++mcast_snooping_set_ipv6_exceptions(struct mcast_snooping *ms, struct mcast_ipv6_exception *exceptions,
++                                  unsigned int count)
++    OVS_REQ_WRLOCK(ms->rwlock)
++{
++    int i;
++    for (i = 0; i < count; i++) {
++        uint32_t *addr = exceptions[i].addr.__in6_union.__s6_addr32;
++        uint32_t *mask = exceptions[i].mask.__in6_union.__s6_addr32;
++        addr[0] &= mask[0];
++        addr[1] &= mask[1];
++        addr[2] &= mask[2];
++        addr[3] &= mask[3];
++    }
++
++    if (ms->ipv6_exceptions)
++        free(ms->ipv6_exceptions);
++    ms->ipv6_exceptions_count = count;
++    ms->ipv6_exceptions = exceptions;
++}
++
+ /* Sets the maximum number of entries in 'ms' to 'max_entries', adjusting it
+  * to be within a reasonable range. */
+ void
+Index: b/ofproto/ofproto-dpif-xlate.c
+===================================================================
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -3044,7 +3044,7 @@ xlate_normal(struct xlate_ctx *ctx)
+                 xlate_normal_flood(ctx, in_xbundle, &xvlan);
+             }
+         } else {
+-            if (is_ip_local_multicast(flow, wc)) {
++            if (is_ip_local_multicast(flow, wc) || is_mcast_exception(ms, flow)) {
+                 /* RFC4541: section 2.1.2, item 2: Packets with a dst IP
+                  * address in the 224.0.0.x range which are not IGMP must
+                  * be forwarded on all ports */
+Index: b/ofproto/ofproto-dpif.c
+===================================================================
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -3460,6 +3460,8 @@ set_mcast_snooping(struct ofproto *ofpro
+         if (mcast_snooping_set_flood_unreg(ofproto->ms, s->flood_unreg)) {
+             ofproto->backer->need_revalidate = REV_RECONFIGURE;
+         }
++        mcast_snooping_set_ipv4_exceptions(ofproto->ms, s->ipv4_exceptions, s->ipv4_exceptions_count);
++        mcast_snooping_set_ipv6_exceptions(ofproto->ms, s->ipv6_exceptions, s->ipv6_exceptions_count);
+         ovs_rwlock_unlock(&ofproto->ms->rwlock);
+     } else {
+         mcast_snooping_unref(ofproto->ms);

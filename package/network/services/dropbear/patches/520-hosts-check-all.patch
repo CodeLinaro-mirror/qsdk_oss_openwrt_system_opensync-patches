@@ -1,0 +1,39 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/src/cli-kex.c
++++ b/src/cli-kex.c
+@@ -292,6 +292,7 @@ static void checkhostkey(const unsigned
+ 	char * fingerprint = NULL;
+ 	buffer * line = NULL;
+ 	int ret;
++    int keyfound = 0;
+ 
+ 	if (cli_opts.no_hostkey_check) {
+ 		dropbear_log(LOG_INFO, "Caution, skipping hostkey check for %s\n", cli_opts.remotehost);
+@@ -365,6 +366,12 @@ static void checkhostkey(const unsigned
+ 			goto out;
+ 		}
+ 
++        /* there is a key mismatch, but continue searching */
++        keyfound = 1;
++
++	} while (1); /* keep going 'til something happens */
++
++    if (keyfound) {
+ 		/* The keys didn't match. eep. Note that we're "leaking"
+ 		   the fingerprint strings here, but we're exiting anyway */
+ 		dropbear_exit("\n\n%s host key mismatch for %s !\n"
+@@ -375,7 +382,7 @@ static void checkhostkey(const unsigned
+ 					cli_opts.remotehost,
+ 					sign_key_fingerprint(keyblob, keybloblen),
+ 					fingerprint ? fingerprint : "UNKNOWN");
+-	} while (1); /* keep going 'til something happens */
++    }
+ 
+ 	/* Key doesn't exist yet */
+     if (!cli_opts.dropunknown) {
