@@ -1,0 +1,638 @@
+From 832218aa47c4b808d46c439831991bc1905226f8 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Thu, 26 Sep 2024 13:10:14 +0530
+Subject: [PATCH] Add support for various fixes in nss drivers
+
+Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
+
+Index: qca-nss-ecm-g32df0ce/frontends/cmn/ecm_ported_ipv4.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/frontends/cmn/ecm_ported_ipv4.c
++++ qca-nss-ecm-g32df0ce/frontends/cmn/ecm_ported_ipv4.c
+@@ -153,16 +153,19 @@ unsigned int ecm_ported_ipv4_process(str
+ 	struct vxlan_dev *vxlan_tun = NULL;
+ #endif
+ 
+-	if (protocol == IPPROTO_TCP) {
+-		if (likely(ct)) {
+ #ifdef ECM_CLASSIFIER_DSCP_ENABLE
+-			/*
+-			 * Set the DSCP conntrack extension. These values will be
+-			 * used in the DSCP classifier for setting them quickly in the
+-			 * classifier response.
+-			 */
+-			ecm_front_end_tcp_set_dscp_ext(ct, iph, skb, sender);
++	/*
++	* Set the DSCP conntrack extension. These values will be
++	* used in the DSCP classifier for setting them quickly in the
++	* classifier response.
++	*/
++	if (likely(ct)) {
++		ecm_front_end_tcp_set_dscp_ext(ct, iph, skb, sender);
++	}
+ #endif
++
++	if (protocol == IPPROTO_TCP) {
++		if (likely(ct)) {
+ 			/*
+ 			 * Unconfirmed connection may be dropped by Linux at the final step,
+ 			 * So we don't allow acceleration for the unconfirmed connections.
+Index: qca-nss-ecm-g32df0ce/frontends/cmn/ecm_ported_ipv6.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/frontends/cmn/ecm_ported_ipv6.c
++++ qca-nss-ecm-g32df0ce/frontends/cmn/ecm_ported_ipv6.c
+@@ -152,16 +152,19 @@ unsigned int ecm_ported_ipv6_process(str
+ 	struct vxlan_dev *vxlan_tun = NULL;
+ #endif
+ 
+-	if (protocol == IPPROTO_TCP) {
+-		if (likely(ct)) {
+ #ifdef ECM_CLASSIFIER_DSCP_ENABLE
+-			/*
+-			 * Set the DSCP conntrack extension. These values will be
+-			 * used in the DSCP classifier for setting them quickly in the
+-			 * classifier response.
+-			 */
+-			ecm_front_end_tcp_set_dscp_ext(ct, iph, skb, sender);
++	/*
++	* Set the DSCP conntrack extension. These values will be
++	* used in the DSCP classifier for setting them quickly in the
++	* classifier response.
++	*/
++	if (likely(ct)) {
++		ecm_front_end_tcp_set_dscp_ext(ct, iph, skb, sender);
++	}
+ #endif
++
++	if (protocol == IPPROTO_TCP) {
++		if (likely(ct)) {
+ 			/*
+ 			 * Unconfirmed connection may be dropped by Linux at the final step,
+ 			 * So we don't allow acceleration for the unconfirmed connections.
+Index: qca-nss-ecm-g32df0ce/frontends/cmn/ecm_non_ported_ipv4.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/frontends/cmn/ecm_non_ported_ipv4.c
++++ qca-nss-ecm-g32df0ce/frontends/cmn/ecm_non_ported_ipv4.c
+@@ -170,6 +170,17 @@ unsigned int ecm_non_ported_ipv4_process
+ 	dest_port = 0;
+ 	dest_port_nat = 0;
+ 
++#ifdef ECM_CLASSIFIER_DSCP_ENABLE
++	/*
++	* Set the DSCP conntrack extension. These values will be
++	* used in the DSCP classifier for setting them quickly in the
++	* classifier response.
++	*/
++	if (likely(ct)) {
++		ecm_front_end_tcp_set_dscp_ext(ct, ip_hdr, skb, sender);
++	}
++#endif
++
+ 	/*
+ 	 * 3-tuple acceleration for PPPoE bridged flow?
+ 	 */
+Index: qca-nss-ecm-g32df0ce/frontends/cmn/ecm_non_ported_ipv6.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/frontends/cmn/ecm_non_ported_ipv6.c
++++ qca-nss-ecm-g32df0ce/frontends/cmn/ecm_non_ported_ipv6.c
+@@ -167,6 +167,17 @@ unsigned int ecm_non_ported_ipv6_process
+ 	src_port = 0;
+ 	dest_port = 0;
+ 
++#ifdef ECM_CLASSIFIER_DSCP_ENABLE
++	/*
++	* Set the DSCP conntrack extension. These values will be
++	* used in the DSCP classifier for setting them quickly in the
++	* classifier response.
++	*/
++	if (likely(ct)) {
++		ecm_front_end_tcp_set_dscp_ext(ct, ip_hdr, skb, sender);
++	}
++#endif
++
+ 	/*
+ 	 * NAT acceleration is not supported for 3-tuple
+ 	 */
+Index: qca-nss-ecm-g32df0ce/frontends/ecm_front_end_common.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/frontends/ecm_front_end_common.c
++++ qca-nss-ecm-g32df0ce/frontends/ecm_front_end_common.c
+@@ -735,6 +735,19 @@ bool ecm_front_end_gre_proto_is_accel_al
+ }
+ 
+ #ifdef ECM_CLASSIFIER_DSCP_ENABLE
++
++static int ecm_front_end_get_dscp_from_skb(struct sk_buff *skb)
++{
++	int dscp = 0;
++
++	if (ntohs(skb->protocol) ==  ETH_P_IP)
++		dscp = ipv4_get_dsfield(ip_hdr(skb)) >> XT_DSCP_SHIFT;
++	else if (ntohs(skb->protocol) ==  ETH_P_IPV6)
++		dscp = ipv6_get_dsfield(ipv6_hdr(skb)) >> XT_DSCP_SHIFT;
++
++	return dscp;
++}
++
+ /*
+  * ecm_front_end_tcp_set_dscp_ext()
+  *	Sets the DSCP remark extension.
+@@ -745,31 +758,35 @@ void ecm_front_end_tcp_set_dscp_ext(stru
+ 					      ecm_tracker_sender_type_t sender)
+ {
+ 	struct nf_ct_dscpremark_ext *dscpcte;
++	int dscp;
++
++	dscp = ecm_front_end_get_dscp_from_skb(skb);
++	if (!dscp && !skb->priority)
++		return;
+ 
+-	/*
+-	 * Extract the priority and DSCP from skb and store into ct extension for each direction.
+-	 */
+ 	spin_lock_bh(&ct->lock);
+ 	dscpcte = nf_ct_dscpremark_ext_find(ct);
+-	if (dscpcte) {
+-		if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
+-			dscpcte->flow_priority = skb->priority;
+-			dscpcte->flow_int_pri = skb->int_pri;
+-			dscpcte->flow_mark = skb->mark;
+-			dscpcte->flow_dscp = iph->ds >> XT_DSCP_SHIFT;
+-			dscpcte->flow_set_flags = NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP | NF_CT_DSCPREMARK_EXT_MARK;
+-			DEBUG_TRACE("%px: sender: %d flow priority: %d flow int_pri %d flow dscp: %d flow_mark: %d flow_set_flags: 0x%x\n",
+-				    ct, sender, dscpcte->flow_priority, dscpcte->flow_int_pri, dscpcte->flow_dscp, dscpcte->flow_mark, dscpcte->flow_set_flags);
+-		} else {
+-			dscpcte->reply_priority =  skb->priority;
+-			dscpcte->reply_int_pri = skb->int_pri;
+-			dscpcte->reply_mark =  skb->mark;
+-			dscpcte->reply_dscp = iph->ds >> XT_DSCP_SHIFT;
+-			dscpcte->return_set_flags = NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP | NF_CT_DSCPREMARK_EXT_MARK;
+-			DEBUG_TRACE("%px: sender: %d reply priority: %d reply int_pri %d reply dscp: %d reply_mark: %d return_set_flags: 0x%x\n",
+-				    ct, sender, dscpcte->reply_priority, dscpcte->reply_int_pri, dscpcte->reply_dscp, dscpcte->reply_mark, dscpcte->return_set_flags);
+-		}
++
++	if (!dscpcte)
++		goto dscp_ext_exit;
++
++	if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
++		dscpcte->flow_priority = skb->priority;
++		dscpcte->flow_dscp = dscp;
++		dscpcte->flow_set_flags = NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP;
++
++		DEBUG_TRACE("%px: (orig) sender: %d flow priority: 0x%04x flow dscp: %d flow_set_flags: 0x%x\n",
++				ct, sender, dscpcte->flow_priority, dscpcte->flow_dscp, dscpcte->flow_set_flags);
++	} else {
++		dscpcte->reply_priority =  skb->priority;
++		dscpcte->reply_dscp = dscp;
++		dscpcte->return_set_flags = NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP;
++
++		DEBUG_TRACE("%px: (reply) sender: %d reply priority: 0x%04x reply dscp: %d return_set_flags: 0x%x\n",
++				ct, sender, dscpcte->reply_priority, dscpcte->reply_dscp, dscpcte->return_set_flags);
+ 	}
++
++dscp_ext_exit:
+ 	spin_unlock_bh(&ct->lock);
+ }
+ #endif
+Index: qca-nss-ecm-g32df0ce/ecm_classifier_dscp.c
+===================================================================
+--- qca-nss-ecm-g32df0ce.orig/ecm_classifier_dscp.c
++++ qca-nss-ecm-g32df0ce/ecm_classifier_dscp.c
+@@ -205,30 +205,6 @@ static inline bool ecm_classifier_dscp_i
+ }
+ 
+ /*
+- * ecm_classifier_dscp_fill_info()
+- *	Save the QoS and DSCP values in the classifier instance.
+- */
+-static void ecm_classifier_dscp_fill_info(struct ecm_classifier_dscp_instance *cdscpi,
+-					 ecm_tracker_sender_type_t sender,
+-					 struct ecm_tracker_ip_header *ip_hdr,
+-					 struct sk_buff *skb)
+-{
+-	if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
+-		cdscpi->process_response.flow_qos_tag = skb->priority;
+-		cdscpi->process_response.flow_int_pri = skb->int_pri;
+-		cdscpi->process_response.flow_mark = skb->mark;
+-		cdscpi->process_response.flow_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-		cdscpi->packet_seen[ECM_CONN_DIR_FLOW] = true;
+-	} else {
+-		cdscpi->process_response.return_qos_tag = skb->priority;
+-		cdscpi->process_response.return_int_pri = skb->int_pri;
+-		cdscpi->process_response.return_mark = skb->mark;
+-		cdscpi->process_response.return_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-		cdscpi->packet_seen[ECM_CONN_DIR_RETURN] = true;
+-	}
+-}
+-
+-/*
+  * ecm_classifier_dscp_update()
+  *	Called from the frontend files to update the classifier instance.
+  */
+@@ -267,6 +243,18 @@ void ecm_classifier_dscp_update(struct e
+ 	cdscpi->process_response.return_mark = ct->mark;
+ }
+ 
++static int ecm_front_end_get_dscp_from_skb(struct sk_buff *skb)
++{
++	int dscp = 0;
++
++	if (ntohs(skb->protocol) ==  ETH_P_IP)
++		dscp = ipv4_get_dsfield(ip_hdr(skb)) >> XT_DSCP_SHIFT;
++	else if (ntohs(skb->protocol) ==  ETH_P_IPV6)
++		dscp = ipv6_get_dsfield(ipv6_hdr(skb)) >> XT_DSCP_SHIFT;
++
++	return dscp;
++}
++
+ /*
+  * ecm_classifier_dscp_process()
+  *	Process new data for connection
+@@ -275,18 +263,19 @@ static void ecm_classifier_dscp_process(
+ 						struct ecm_tracker_ip_header *ip_hdr, struct sk_buff *skb,
+ 						struct ecm_classifier_process_response *process_response)
+ {
+-	struct ecm_classifier_dscp_instance *cdscpi;
++	struct ecm_classifier_dscp_instance *cdscpi = NULL;
+ 	ecm_classifier_relevence_t relevance;
+ 	struct ecm_db_connection_instance *ci = NULL;
+-	struct ecm_front_end_connection_instance *feci;
++	struct ecm_front_end_connection_instance *feci = NULL;
+ 	ecm_front_end_acceleration_mode_t accel_mode;
+ 	int protocol;
+ 	uint32_t became_relevant = 0;
+-	struct nf_conn *ct;
++	struct nf_conn *ct = NULL;
+ 	enum ip_conntrack_info ctinfo;
+-	struct nf_ct_dscpremark_ext *dscpcte;
+-	bool dscp_marked = false;
+-	uint64_t slow_pkts;
++	struct nf_ct_dscpremark_ext *dscpcte = NULL;
++	uint32_t slow_pkts;
++	bool from_extension = true;
++
+ 
+ 	cdscpi = (struct ecm_classifier_dscp_instance *)aci;
+ 	DEBUG_CHECK_MAGIC(cdscpi, ECM_CLASSIFIER_DSCP_INSTANCE_MAGIC, "%px: magic failed\n", cdscpi);
+@@ -326,12 +315,15 @@ static void ecm_classifier_dscp_process(
+ 
+ 	/*
+ 	 * Can we accelerate?
++	 * If there is no ci entry, the connection is forced to slow-path.
++	 * Saying that, there can be a ci later and we need to ensure that at that time dscp is processed
++	 * so we won't say here ECM_CLASSIFIER_RELEVANCE_NO yet
++
+ 	 */
+ 	ci = ecm_db_connection_serial_find_and_ref(cdscpi->ci_serial);
+ 	if (!ci) {
+ 		DEBUG_TRACE("%px: No ci found for %u\n", cdscpi, cdscpi->ci_serial);
+ 		spin_lock_bh(&ecm_classifier_dscp_lock);
+-		cdscpi->process_response.relevance = ECM_CLASSIFIER_RELEVANCE_NO;
+ 		goto dscp_classifier_out;
+ 	}
+ 
+@@ -341,21 +333,22 @@ static void ecm_classifier_dscp_process(
+ 	ecm_front_end_connection_deref(feci);
+ 	protocol = ecm_db_connection_protocol_get(ci);
+ 	ecm_db_connection_deref(ci);
+-	if (ECM_FRONT_END_ACCELERATION_NOT_POSSIBLE(accel_mode)) {
+-		spin_lock_bh(&ecm_classifier_dscp_lock);
+-		cdscpi->process_response.relevance = ECM_CLASSIFIER_RELEVANCE_NO;
+-		goto dscp_classifier_out;
+-	}
+ 
+ 	/*
+ 	 * Is there a valid conntrack?
++	 * There should be one for routed connection and even for bridged connection since
++	 * we are using BR_NFHOOKS
++
+ 	 */
+ 	ct = nf_ct_get(skb, &ctinfo);
+ 	if (!ct) {
+-		DEBUG_WARN("%px: no conntrack found\n", cdscpi);
+-		spin_lock_bh(&ecm_classifier_dscp_lock);
+-		cdscpi->process_response.relevance = ECM_CLASSIFIER_RELEVANCE_NO;
+-		goto dscp_classifier_out;
++		if (ecm_db_connection_is_routed_get(ci) == true) {
++			DEBUG_WARN("%px: No conntrack found for routed connection?\n", cdscpi);
++			spin_lock_bh(&ecm_classifier_dscp_lock);
++			goto dscp_classifier_out;
++		} else {
++			goto dscp_bridge_no_ct;
++		}
+ 	}
+ 
+ 	/*
+@@ -363,217 +356,66 @@ static void ecm_classifier_dscp_process(
+ 	 */
+ 	spin_lock_bh(&ct->lock);
+ 	dscpcte = nf_ct_dscpremark_ext_find(ct);
+-	if (!dscpcte) {
+-		spin_unlock_bh(&ct->lock);
+-		DEBUG_WARN("%px: no DSCP conntrack extension found\n", cdscpi);
+-		spin_lock_bh(&ecm_classifier_dscp_lock);
+-		cdscpi->process_response.relevance = ECM_CLASSIFIER_RELEVANCE_NO;
+-		goto dscp_classifier_out;
+-	}
+-
+-	/*
+-	 * Was a DSCP rule enabled for the flow using the iptables 'DSCP'
+-	 * target?
+-	 */
+-	if (nf_conntrack_dscpremark_ext_get_dscp_rule_validity(ct)
+-				== NF_CT_DSCPREMARK_EXT_RULE_VALID) {
+-		DEBUG_TRACE("%px: DSCP remark extension is valid\n", cdscpi);
+-		dscp_marked = true;
+-	}
+ 	spin_unlock_bh(&ct->lock);
+ 
++dscp_bridge_no_ct:
+ 	/*
+ 	 * We are relevant to the connection
+ 	 */
+ 	became_relevant = ecm_db_time_get();
+ 
+ 	spin_lock_bh(&ecm_classifier_dscp_lock);
+-	cdscpi->process_response.relevance = ECM_CLASSIFIER_RELEVANCE_YES;
+-	cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_ACCEL_MODE;
+-	cdscpi->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_ACCEL;
+-	cdscpi->process_response.became_relevant = became_relevant;
++/*
++ * If DSCP conntrack extension is filled in the frontend, use those values
++ * instead of waiting both direction traffic again.
++ */
++	if (dscpcte &&  ((dscpcte->flow_set_flags == (NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP))
++				|| (dscpcte->return_set_flags == (NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP)))) {
++     
++		/* If sender and the conntrack info direction are consistent, fill the response field
++                * with the flow/return values as it is. Otherwise reverse the assignments.
+ 
+-	if (protocol == IPPROTO_TCP) {
+-		/*
+-		 * If DSCP conntrack extension is filled in the frontend, use those values
+-		 * instead of waiting both direction traffic again.
+-		 */
+-		if ((dscpcte->flow_set_flags == (NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP | NF_CT_DSCPREMARK_EXT_MARK))
+-			&& (dscpcte->return_set_flags == (NF_CT_DSCPREMARK_EXT_PRIO | NF_CT_DSCPREMARK_EXT_DSCP | NF_CT_DSCPREMARK_EXT_MARK))) {
+-			/*
+-			 * If sender and the conntrack info direction are consistent, fill the response field
+-			 * with the flow/return values as it is. Otherwise reverse the assignments.
+-			 */
+-			if (((sender == ECM_TRACKER_SENDER_TYPE_SRC) && (IP_CT_DIR_ORIGINAL == CTINFO2DIR(ctinfo))) ||
++		*/
++		if (((sender == ECM_TRACKER_SENDER_TYPE_SRC) && (IP_CT_DIR_ORIGINAL == CTINFO2DIR(ctinfo))) ||
+ 				((sender == ECM_TRACKER_SENDER_TYPE_DEST) && (IP_CT_DIR_REPLY == CTINFO2DIR(ctinfo)))) {
+-				cdscpi->process_response.flow_qos_tag = dscpcte->flow_priority;
+-				cdscpi->process_response.return_qos_tag = dscpcte->reply_priority;
+-				cdscpi->process_response.flow_int_pri = dscpcte->flow_int_pri;
+-				cdscpi->process_response.return_int_pri = dscpcte->reply_int_pri;
+-				cdscpi->process_response.flow_mark = dscpcte->flow_mark;
+-				cdscpi->process_response.return_mark = dscpcte->reply_mark;
+-				cdscpi->process_response.flow_dscp = dscpcte->flow_dscp;
+-				cdscpi->process_response.return_dscp = dscpcte->reply_dscp;
+-			} else {
+-				cdscpi->process_response.flow_qos_tag = dscpcte->reply_priority;
+-				cdscpi->process_response.return_qos_tag = dscpcte->flow_priority;
+-				cdscpi->process_response.flow_int_pri = dscpcte->reply_int_pri;
+-				cdscpi->process_response.return_int_pri = dscpcte->flow_int_pri;
+-				cdscpi->process_response.flow_mark = dscpcte->reply_mark;
+-				cdscpi->process_response.return_mark = dscpcte->flow_mark;
+-				cdscpi->process_response.flow_dscp = dscpcte->reply_dscp;
+-				cdscpi->process_response.return_dscp = dscpcte->flow_dscp;
+-			}
+-			DEBUG_TRACE("%px: DSCP extension is used to set the QoS values\n", cdscpi);
+-			goto done;
++			cdscpi->process_response.flow_qos_tag = dscpcte->flow_priority;
++			cdscpi->process_response.return_qos_tag = dscpcte->reply_priority;
++			cdscpi->process_response.flow_dscp = dscpcte->flow_dscp;
++			cdscpi->process_response.return_dscp = dscpcte->reply_dscp;
++		} else {
++			cdscpi->process_response.flow_qos_tag = dscpcte->reply_priority;
++			cdscpi->process_response.return_qos_tag = dscpcte->flow_priority;
++			cdscpi->process_response.flow_dscp = dscpcte->reply_dscp;
++			cdscpi->process_response.return_dscp = dscpcte->flow_dscp;
+ 		}
++	}
++	else if (!dscpcte)
++	{
++		from_extension = false;
++		if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
++                        cdscpi->process_response.flow_qos_tag = skb->priority;
++			cdscpi->process_response.flow_dscp = ecm_front_end_get_dscp_from_skb(skb);
++                } else {
++                        cdscpi->process_response.return_qos_tag = skb->priority;
++			cdscpi->process_response.return_dscp = ecm_front_end_get_dscp_from_skb(skb);
+ 
+-		/*
+-		 * Stop the processing if both side packets are already seen.
+-		 * Above the process response is already set to allow the acceleration.
+-		 */
+-		if (ecm_classifier_dscp_is_bidi_packet_seen(cdscpi)) {
+-			DEBUG_TRACE("%px: TCP bi-di packets seen\n", cdscpi);
+-			goto done;
+ 		}
++	}
++
++	if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
++		cdscpi->packet_seen[ECM_CONN_DIR_FLOW] = true;
++	} else {
++		cdscpi->packet_seen[ECM_CONN_DIR_RETURN] = true;
++	}
+ 
+-		/*
+-		 * Store the QoS and DSCP info in the classifier instance and deny the
+-		 * acceleration if both side info is not yet available.
+-		 *
+-		 * This setting is a backup setting for the QoS values, in case the DSCP
+-		 * conntrack extension is not filled. This situation happens when the conntrack
+-		 * table is flushed by the user with the echo f > /proc/net/nf_conntrack command.
+-		 * After this flush, the conntarck entry and the ECM connection entry are destroyed,
+-		 * but the TCP connection remains established. When the next packet comes to ECM,
+-		 * since there is no TCP handshake, the DSCP conntarck extension is not set. So,
+-		 * we need to read these values from the packet's IP header.
+-		 */
+-		ecm_classifier_dscp_fill_info(cdscpi, sender, ip_hdr, skb);
++	if (protocol == IPPROTO_TCP) {
+ 		if (!ecm_classifier_dscp_is_bidi_packet_seen(cdscpi)) {
+ 			DEBUG_TRACE("%px: TCP both side info is not yet picked\n", cdscpi);
++			cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_ACCEL_MODE;
+ 			cdscpi->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
+ 			goto dscp_classifier_out;
+ 		}
+-	} else {
+-		/*
+-		 * If the acceleration delay option is enabled, we will wait
+-		 * until seeing both side traffic.
+-		 *
+-		 * There are 2 options:
+-		 * Option 1: Wait forever until to see the reply direction traffic
+-		 * Option 2: Wait for seeing N number of packets. If we still don't see reply,
+-		 * set the uni-directional values.
+-		 */
+-		if (ecm_classifier_accel_delay_pkts) {
+-			/*
+-			 * Stop the processing if both side packets are already seen.
+-			 * Above the process response is already set to allow the
+-			 * acceleration.
+-			 */
+-			if (ecm_classifier_dscp_is_bidi_packet_seen(cdscpi)) {
+-				DEBUG_TRACE("%px: UDP bi-di packets seen\n", cdscpi);
+-				goto done;
+-			}
+-
+-			/*
+-			 * Store the QoS and DSCP info in the classifier instance and allow the
+-			 * acceleration if both side info is not yet available.
+-			 */
+-			ecm_classifier_dscp_fill_info(cdscpi, sender, ip_hdr, skb);
+-			if (ecm_classifier_dscp_is_bidi_packet_seen(cdscpi)) {
+-				DEBUG_TRACE("%px: UDP both side info is picked\n", cdscpi);
+-				goto done;
+-			}
+-
+-			/*
+-			 * Deny the acceleration if any of the below options holds true.
+-			 * For option 1, we wait forever
+-			 * For option 2, we wait until seeing ecm_classifier_accel_delay_pkts.
+-			 */
+-			if ((ecm_classifier_accel_delay_pkts == 1) || (slow_pkts < ecm_classifier_accel_delay_pkts)) {
+-				DEBUG_TRACE("%px: accel_delay_pkts: %d slow_pkts: %llu accel is not allowed yet\n",
+-						cdscpi, ecm_classifier_accel_delay_pkts, slow_pkts);
+-				cdscpi->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
+-				goto dscp_classifier_out;
+-			}
+-		}
+-
+-		/*
+-		 * If we didn't see both direction traffic during the acceleration
+-		 * delay time, we can allow the acceleration by setting the uni-directional
+-		 * values to both flow and return QoS and DSCP.
+-		 */
+-		if (sender == ECM_TRACKER_SENDER_TYPE_SRC) {
+-			cdscpi->process_response.flow_qos_tag = skb->priority;
+-			cdscpi->process_response.flow_int_pri = skb->int_pri;
+-			cdscpi->process_response.flow_mark = skb->mark;
+-			cdscpi->process_response.flow_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-
+-			/*
+-			 * If UDP bi-di traffic is being run, it is possible that other direction's
+-			 * QoS and DSCP values are also set by the subsequent packets before we push
+-			 * the rule to NSS. So, let's update them, if they are not set.
+-			 */
+-			if (cdscpi->process_response.return_int_pri == 0) {
+-				cdscpi->process_response.return_int_pri = skb->int_pri;
+-			}
+-
+-			if (cdscpi->process_response.return_qos_tag == 0) {
+-				cdscpi->process_response.return_qos_tag = skb->priority;
+-			}
+-
+-			if (cdscpi->process_response.return_mark == 0) {
+-				cdscpi->process_response.return_mark = skb->mark;
+-			}
+-
+-			if (cdscpi->process_response.return_dscp == 0) {
+-				cdscpi->process_response.return_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-			}
+-
+-		} else {
+-			cdscpi->process_response.return_qos_tag = skb->priority;
+-			cdscpi->process_response.return_int_pri = skb->int_pri;
+-			cdscpi->process_response.return_mark = skb->mark;
+-			cdscpi->process_response.return_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-
+-			/*
+-			 * If UDP bi-di traffic is being run, it is possible that other direction's
+-			 * QoS and DSCP values are also set by the subsequent packets before we push
+-			 * the rule to NSS. So, let's update them, if they are not set.
+-			 */
+-
+-			if (cdscpi->process_response.flow_int_pri == 0) {
+-				cdscpi->process_response.flow_int_pri = skb->int_pri;
+-			}
+-
+-			if (cdscpi->process_response.flow_qos_tag == 0) {
+-				cdscpi->process_response.flow_qos_tag = skb->priority;
+-			}
+-
+-			if (cdscpi->process_response.flow_mark == 0) {
+-				cdscpi->process_response.flow_mark = skb->mark;
+-			}
+-
+-			if (cdscpi->process_response.flow_dscp == 0) {
+-				cdscpi->process_response.flow_dscp = ip_hdr->ds >> XT_DSCP_SHIFT;
+-			}
+-		}
+-
+-		/*
+-		 * If the flow and return set flags are set for the MARK, we overwrite the mark field.
+-		 * These values are stored in the dscp extentension in the update callback.
+-		 */
+-		if ((dscpcte->flow_set_flags & NF_CT_DSCPREMARK_EXT_MARK) &&
+-				(dscpcte->return_set_flags & NF_CT_DSCPREMARK_EXT_MARK)) {
+-			cdscpi->process_response.flow_mark = dscpcte->flow_mark;
+-			cdscpi->process_response.return_mark = dscpcte->reply_mark;
+-		}
+ 	}
+-done:
+-	cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_QOS_TAG;
+-	cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_MARK;
+-
+ #ifdef ECM_CLASSIFIER_DSCP_IGS
+ 	/*
+ 	 * IGS qostag values in conntrack are stored as per the direction of the flow.
+@@ -598,10 +440,53 @@ done:
+ 	/*
+ 	 * Check if we need to set DSCP
+ 	 */
+-	if (dscp_marked) {
++	if (protocol == IPPROTO_GRE) {
++		DEBUG_TRACE("%px: allow GRE aceleration (slow path packets: %d/%d)\n",
++				cdscpi, slow_pkts, ecm_classifier_accel_delay_pkts);
++		goto skip_pkt_delay;
++	}
++
++	if (slow_pkts < ecm_classifier_accel_delay_pkts) {
++		DEBUG_TRACE("%px: proto: %d, slow_pkts: %d < %d accel_delay_pkts -> accel is not allowed yet\n",
++				cdscpi, protocol, slow_pkts, ecm_classifier_accel_delay_pkts);
++		cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_ACCEL_MODE;
++		cdscpi->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
++
++		goto dscp_classifier_out;
++	}
++
++skip_pkt_delay:
++	if (cdscpi->process_response.flow_dscp && cdscpi->process_response.return_dscp == 0)
++		cdscpi->process_response.return_dscp = cdscpi->process_response.flow_dscp;
++
++	if (cdscpi->process_response.return_dscp && cdscpi->process_response.flow_dscp == 0)
++		cdscpi->process_response.flow_dscp = cdscpi->process_response.return_dscp;
++
++	if (cdscpi->process_response.flow_dscp || cdscpi->process_response.return_dscp) {
+ 		cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_DSCP;
+ 	}
+ 
++	if (cdscpi->process_response.flow_qos_tag || cdscpi->process_response.return_qos_tag) {
++		cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_DSCP;
++	}
++
++	DEBUG_TRACE("%px: proto: %d, actions: 0x%08x, dscp: %d/%d, qos_tag: 0x%04x/0x%04x, que_map: 0x%04x, ext: %s\n",
++			cdscpi, protocol,
++			cdscpi->process_response.process_actions,
++			cdscpi->process_response.flow_dscp,
++			cdscpi->process_response.return_dscp,
++			cdscpi->process_response.flow_qos_tag,
++			cdscpi->process_response.return_qos_tag,
++			skb_get_queue_mapping(skb),
++			(from_extension == true) ? "yes":"no");
++
++	cdscpi->process_response.became_relevant = became_relevant;
++	cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_QOS_TAG;
++	cdscpi->process_response.process_actions |= ECM_CLASSIFIER_PROCESS_ACTION_ACCEL_MODE;
++	cdscpi->process_response.relevance  = ECM_CLASSIFIER_RELEVANCE_YES;
++	cdscpi->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_ACCEL;
++
++
+ dscp_classifier_out:
+ 
+ 	/*

@@ -1,0 +1,143 @@
+From 01665f9ff790c02a56074a18a35b30f97a496358 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Wed, 31 May 2023 13:45:44 -0700
+Subject: [PATCH] [qca-nss-drv] Add Ingress DSCP fields
+
+Do not merge. This is a feature for OpenSync.
+
+Change-Id: I1b3621c2ae6d8f7652a4eface209c2b457c3c8b5
+Signed-off-by: Murat Sezgin <quic_msezgin@quicinc.com>
+---
+ exports/nss_ipv4.h | 6 +++++-
+ exports/nss_ipv6.h | 6 +++++-
+ nss_ipv4_strings.c | 3 +++
+ nss_ipv6_strings.c | 3 +++
+ 4 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/exports/nss_ipv4.h b/exports/nss_ipv4.h
+index ee3a552..b482152 100644
+--- a/exports/nss_ipv4.h
++++ b/exports/nss_ipv4.h
+@@ -410,7 +410,8 @@ struct nss_ipv4_pppoe_rule {
+ struct nss_ipv4_dscp_rule {
+ 	uint8_t flow_dscp;	/**< Egress DSCP value for the flow direction. */
+ 	uint8_t return_dscp;	/**< Egress DSCP value for the return direction. */
+-	uint8_t reserved[2];	/**< Padded for alignment. */
++	uint8_t ingress_flow_dscp;	/**< Ingress DSCP value for the flow direction to be checked. */
++	uint8_t ingress_return_dscp;	/**< Ingress DSCP value for the return direction to be checked. */
+ };
+ 
+ /**
+@@ -839,12 +840,14 @@ enum nss_ipv4_exception_events {
+ 	NSS_IPV4_EXCEPTION_EVENT_TCP_SEQ_BEFORE_LEFT_EDGE,
+ 	NSS_IPV4_EXCEPTION_EVENT_TCP_ACK_EXCEEDS_RIGHT_EDGE,
+ 	NSS_IPV4_EXCEPTION_EVENT_TCP_ACK_BEFORE_LEFT_EDGE,
++	NSS_IPV4_EXCEPTION_EVENT_TCP_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_HEADER_INCOMPLETE,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_NO_ICME,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_IP_OPTION,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_IP_FRAGMENT,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_SMALL_TTL,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDP_NEEDS_FRAGMENTATION,
++	NSS_IPV4_EXCEPTION_EVENT_UDP_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV4_EXCEPTION_EVENT_WRONG_TARGET_MAC,
+ 	NSS_IPV4_EXCEPTION_EVENT_HEADER_INCOMPLETE,
+ 	NSS_IPV4_EXCEPTION_EVENT_BAD_TOTAL_LENGTH,
+@@ -891,6 +894,7 @@ enum nss_ipv4_exception_events {
+ 	NSS_IPV4_EXCEPTION_EVENT_UDPLITE_IP_FRAGMENT,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDPLITE_SMALL_TTL,
+ 	NSS_IPV4_EXCEPTION_EVENT_UDPLITE_NEEDS_FRAGMENTATION,
++	NSS_IPV4_EXCEPTION_EVENT_UDPLITE_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV4_EXCEPTION_EVENT_MC_UDP_NO_ICME,
+ 	NSS_IPV4_EXCEPTION_EVENT_MC_MEM_ALLOC_FAILURE,
+ 	NSS_IPV4_EXCEPTION_EVENT_MC_UPDATE_FAILURE,
+diff --git a/exports/nss_ipv6.h b/exports/nss_ipv6.h
+index 930e74c..db3b04d 100644
+--- a/exports/nss_ipv6.h
++++ b/exports/nss_ipv6.h
+@@ -390,10 +390,12 @@ enum nss_ipv6_exception_events {
+ 	NSS_IPV6_EXCEPTION_EVENT_TCP_SEQ_BEFORE_LEFT_EDGE,
+ 	NSS_IPV6_EXCEPTION_EVENT_TCP_ACK_EXCEEDS_RIGHT_EDGE,
+ 	NSS_IPV6_EXCEPTION_EVENT_TCP_ACK_BEFORE_LEFT_EDGE,
++	NSS_IPV6_EXCEPTION_EVENT_TCP_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDP_HEADER_INCOMPLETE,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDP_NO_ICME,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDP_SMALL_HOP_LIMIT,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDP_NEEDS_FRAGMENTATION,
++	NSS_IPV6_EXCEPTION_EVENT_UDP_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV6_EXCEPTION_EVENT_WRONG_TARGET_MAC,
+ 	NSS_IPV6_EXCEPTION_EVENT_HEADER_INCOMPLETE,
+ 	NSS_IPV6_EXCEPTION_EVENT_UNKNOWN_PROTOCOL,
+@@ -411,6 +413,7 @@ enum nss_ipv6_exception_events {
+ 	NSS_IPV6_EXCEPTION_EVENT_UDPLITE_NO_ICME,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDPLITE_SMALL_HOP_LIMIT,
+ 	NSS_IPV6_EXCEPTION_EVENT_UDPLITE_NEEDS_FRAGMENTATION,
++	NSS_IPV6_EXCEPTION_EVENT_UDPLITE_INGRESS_DSCP_MISMATCH,
+ 	NSS_IPV6_EXCEPTION_EVENT_MC_UDP_NO_ICME,
+ 	NSS_IPV6_EXCEPTION_EVENT_MC_MEM_ALLOC_FAILURE,
+ 	NSS_IPV6_EXCEPTION_EVENT_MC_UPDATE_FAILURE,
+@@ -481,7 +484,8 @@ struct nss_ipv6_pppoe_rule {
+ struct nss_ipv6_dscp_rule {
+ 	uint8_t flow_dscp;	/**< Egress DSCP value for the flow direction. */
+ 	uint8_t return_dscp;	/**< Egress DSCP value for the return direction. */
+-	uint8_t reserved[2];	/**< Padded for alignment. */
++	uint8_t ingress_flow_dscp;	/**< Ingress DSCP value for the flow direction to be checked. */
++	uint8_t ingress_return_dscp;	/**< Ingress DSCP value for the return direction to be checked. */
+ };
+ 
+ /**
+diff --git a/nss_ipv4_strings.c b/nss_ipv4_strings.c
+index 77ff352..bb3d057 100644
+--- a/nss_ipv4_strings.c
++++ b/nss_ipv4_strings.c
+@@ -48,12 +48,14 @@ struct nss_stats_info nss_ipv4_strings_exception_stats[NSS_IPV4_EXCEPTION_EVENT_
+ 	{"tcp_seq_before_left_edge"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"tcp_ack_exceeds_right_edge"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"tcp_ack_before_left_edge"		, NSS_STATS_TYPE_EXCEPTION},
++	{"tcp_ingress_dscp_mismatch"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_header_incomplete"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_no_icme"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_ip_option"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_ip_fragment"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_small_ttl"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_needs_fragmentation"		, NSS_STATS_TYPE_EXCEPTION},
++	{"udp_ingress_dscp_mismatch"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"wrong_target_mac"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"header_incomplete"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"bad_total_length"			, NSS_STATS_TYPE_EXCEPTION},
+@@ -100,6 +102,7 @@ struct nss_stats_info nss_ipv4_strings_exception_stats[NSS_IPV4_EXCEPTION_EVENT_
+ 	{"udplite_ip_fragment"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udplite_small_ttl"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udplite_needs_fragmentation"		, NSS_STATS_TYPE_EXCEPTION},
++	{"udplite_ingress_dscp_mismatch"	, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_udp_no_icme"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_mem_alloc_failure"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_update_failure"			, NSS_STATS_TYPE_EXCEPTION},
+diff --git a/nss_ipv6_strings.c b/nss_ipv6_strings.c
+index 57b100f..851dd4a 100644
+--- a/nss_ipv6_strings.c
++++ b/nss_ipv6_strings.c
+@@ -46,10 +46,12 @@ struct nss_stats_info nss_ipv6_strings_exception_stats[NSS_IPV6_EXCEPTION_EVENT_
+ 	{"tcp_seq_before_left_edge"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"tcp_ack_exceeds_right_edge"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"tcp_ack_before_left_edge"			, NSS_STATS_TYPE_EXCEPTION},
++	{"tcp_ingress_dscp_mismatch"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_header_incomplete"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_no_icme"					, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_small_hop_limit"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udp_needs_fragmentation"			, NSS_STATS_TYPE_EXCEPTION},
++	{"udp_ingress_dscp_mismatch"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"wrong_target_mac"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"header_incomplete"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"unknown_protocol"				, NSS_STATS_TYPE_EXCEPTION},
+@@ -67,6 +69,7 @@ struct nss_stats_info nss_ipv6_strings_exception_stats[NSS_IPV6_EXCEPTION_EVENT_
+ 	{"udplite_no_icme"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udplite_small_hop_limit"			, NSS_STATS_TYPE_EXCEPTION},
+ 	{"udplite_needs_fragmentation"			, NSS_STATS_TYPE_EXCEPTION},
++	{"udplite_ingress_dscp_mismatch"		, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_udp_no_icme"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_mem_alloc_failure"				, NSS_STATS_TYPE_EXCEPTION},
+ 	{"mc_update_failure"				, NSS_STATS_TYPE_EXCEPTION},
+-- 
+2.9.3
+

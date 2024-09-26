@@ -1,0 +1,158 @@
+From 832218aa47c4b808d46c439831991bc1905226f8 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Thu, 26 Sep 2024 13:10:14 +0530
+Subject: [PATCH] Add support for various fixes in nss drivers
+
+Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
+
+--- a/ecm_conntrack_notifier.c
++++ b/ecm_conntrack_notifier.c
+@@ -81,6 +81,7 @@
+ #include "ecm_db.h"
+ #include "ecm_front_end_ipv4.h"
+ #include "ecm_front_end_ipv6.h"
++#include "ecm_front_end_common.h"
+ #ifdef ECM_CLASSIFIER_NL_ENABLE
+ #include "ecm_classifier_nl.h"
+ #endif
+@@ -127,6 +128,51 @@ static void ecm_conntrack_ipv6_event_des
+ }
+ 
+ #if defined(CONFIG_NF_CONNTRACK_MARK)
++static inline void decelerate_and_reclassify(struct ecm_db_connection_instance *ci)
++{
++	struct ecm_front_end_connection_instance *feci;
++	struct ecm_classifier_instance *cls;
++
++	/* Decelerate frontend */
++	feci = ecm_db_connection_front_end_get_and_ref(ci);
++	feci->decelerate(feci);
++	ecm_front_end_connection_deref(feci);
++
++	/* Reclassify DEFAULT classifier */
++	cls = ecm_db_connection_assigned_classifier_find_and_ref(ci, ECM_CLASSIFIER_TYPE_DEFAULT);
++	if (cls) {
++		DEBUG_INFO("%px: Calling reclassify on DEFAULT classifier (instead of regenerate connection)\n", ci);
++		cls->reclassify(cls);
++		cls->deref(cls);
++	} else {
++		DEBUG_ERROR("%px: Unable to find DEFAULT classifier!\n", ci);
++	}
++
++#ifdef ECM_CLASSIFIER_DSCP_ENABLE
++	/* Reclassify DSCP classifier */
++	cls = ecm_db_connection_assigned_classifier_find_and_ref(ci, ECM_CLASSIFIER_TYPE_DSCP);
++	if (cls) {
++		DEBUG_INFO("%px: Calling reclassify on DSCP classifier (instead of regenerate connection)\n", ci);
++		cls->reclassify(cls);
++		cls->deref(cls);
++	} else {
++		DEBUG_ERROR("%px: Unable to find DSCP classifier!\n", ci);
++	}
++#endif
++
++#ifdef ECM_CLASSIFIER_OVS_ENABLE
++	/* Reclassify OVS classifier */
++	cls = ecm_db_connection_assigned_classifier_find_and_ref(ci, ECM_CLASSIFIER_TYPE_OVS);
++	if (cls) {
++		DEBUG_INFO("%px: Calling reclassify on OVS classifier (instead of regenerate connection)\n", ci);
++		cls->reclassify(cls);
++		cls->deref(cls);
++	} else {
++		DEBUG_ERROR("%px: Unable to find OVS classifier!\n", ci);
++	}
++#endif
++}
++
+ /*
+  * ecm_conntrack_ipv6_event_mark()
+  *	Handles conntrack mark events
+@@ -135,6 +181,8 @@ static void ecm_conntrack_ipv6_event_mar
+ {
+ 	struct ecm_db_connection_instance *ci;
+ 	struct ecm_classifier_instance *__attribute__((unused))cls;
++	ecm_front_end_acceleration_mode_t accel_mode;
++	struct ecm_front_end_connection_instance *feci;
+ 
+ 	DEBUG_INFO("%px: IPv6 mark event ct->mark: %d\n", ct, ct->mark);
+ 
+@@ -151,6 +199,25 @@ static void ecm_conntrack_ipv6_event_mar
+ 		return;
+ 	}
+ 
++	feci = ecm_db_connection_front_end_get_and_ref(ci);
++	accel_mode = ecm_front_end_connection_accel_state_get(feci);
++	if ((accel_mode == ECM_FRONT_END_ACCELERATION_MODE_ACCEL) || (accel_mode == ECM_FRONT_END_ACCELERATION_MODE_ACCEL_PENDING)) {
++		DEBUG_TRACE("%px@%px: mark changed on offloaded connection, decelerate. new mark: 0x%08x\n",ci, ct, ct->mark);
++		ecm_db_connection_mark_set(ci, ct->mark);
++		decelerate_and_reclassify(ci);
++	} else {
++		DEBUG_TRACE("%px@%px: mark changed on non-offloaded connection. new mark: 0x%08x\n", ci, ct, ct->mark);
++	}
++	ecm_front_end_connection_deref(feci);
++	ecm_db_connection_deref(ci);
++
++	/**
++	 * With OpenSync ct_mark can be related to dscp value so do a full stop/start here.
++	 * And since we are doing full stop and then start, there is no need for update.
++	 * we can return here. but won't delete QCOM code for now.
++	 */
++#if 0
++
+ #ifdef ECM_CLASSIFIER_NL_ENABLE
+ 	/*
+ 	 * As of now, only the Netlink classifier is interested in conmark changes
+@@ -170,6 +237,8 @@ static void ecm_conntrack_ipv6_event_mar
+ 	 * All done
+ 	 */
+ 	ecm_db_connection_deref(ci);
++
++#endif
+ }
+ #endif
+ 
+@@ -249,6 +318,8 @@ static void ecm_conntrack_ipv4_event_mar
+ {
+ 	struct ecm_db_connection_instance *ci;
+ 	struct ecm_classifier_instance *__attribute__((unused))cls;
++	ecm_front_end_acceleration_mode_t accel_mode;
++	struct ecm_front_end_connection_instance *feci;
+ 
+ 	DEBUG_INFO("%px: IPv4 mark event ct->mark: %d\n", ct, ct->mark);
+ 
+@@ -265,6 +336,25 @@ static void ecm_conntrack_ipv4_event_mar
+ 		return;
+ 	}
+ 
++	feci = ecm_db_connection_front_end_get_and_ref(ci);
++	accel_mode = ecm_front_end_connection_accel_state_get(feci);
++	if ((accel_mode == ECM_FRONT_END_ACCELERATION_MODE_ACCEL) || (accel_mode == ECM_FRONT_END_ACCELERATION_MODE_ACCEL_PENDING)) {
++		DEBUG_TRACE("%px@%px: mark changed on offloaded connection, decelerate. new mark: 0x%08x\n",ci, ct, ct->mark);
++		ecm_db_connection_mark_set(ci, ct->mark);
++		decelerate_and_reclassify(ci);
++	} else {
++		DEBUG_TRACE("%px@%px: mark changed on non-offloaded connection. new mark: 0x%08x\n", ci, ct, ct->mark);
++	}
++	ecm_front_end_connection_deref(feci);
++	ecm_db_connection_deref(ci);
++
++	/**
++	 * With OpenSync ct_mark can be related to dscp value so do a full stop/start here.
++	 * And since we are doing full stop and then start, there is no need for update.
++	 * we can return here. but won't delete QCOM code for now.
++	 */
++#if 0
++
+ #ifdef ECM_CLASSIFIER_NL_ENABLE
+ 	/*
+ 	 * As of now, only the Netlink classifier is interested in conmark changes
+@@ -284,6 +374,9 @@ static void ecm_conntrack_ipv4_event_mar
+ 	 * All done
+ 	 */
+ 	ecm_db_connection_deref(ci);
++
++#endif
++
+ }
+ #endif
+ 
