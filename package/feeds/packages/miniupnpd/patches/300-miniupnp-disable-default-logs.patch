@@ -1,0 +1,45 @@
+Author: Deepak kumar <quic_deepaku@quicinc.com>
+Date: Tue Nov 19 13:37:15 2024
+
+Running miniupnpd as normal (non daemon) process automatically sets
+max debug logs for miniupnpd. This is not desirable. This patch disables
+automatic debug logs also when running as normal process. It is still
+possible to adjust verbosity level with option -v.
+
+Signed-off-by: Deepak kumar <quic_deepaku@quicinc.com>
+
+--- a/miniupnpd.c
++++ b/miniupnpd.c
+@@ -1795,21 +1795,18 @@ init(int argc, char * * argv, struct run
+ 
+ 	openlog("miniupnpd", openlog_option, LOG_MINIUPNPD);
+ 
+-	if(!debug_flag)
++	switch (verbosity_level)
+ 	{
+-		switch (verbosity_level)
+-		{
+-		case 0:
+-			/* speed things up and ignore LOG_INFO and LOG_DEBUG */
+-			setlogmask(LOG_UPTO(LOG_NOTICE));
+-			break;
+-		case 1:
+-			/* ignore LOG_DEBUG */
+-			setlogmask(LOG_UPTO(LOG_INFO));
+-			break;
+-		case 2:
+-			setlogmask(LOG_UPTO(LOG_DEBUG));
+-		}
++	case 0:
++		/* speed things up and ignore LOG_INFO and LOG_DEBUG */
++		setlogmask(LOG_UPTO(LOG_NOTICE));
++		break;
++	case 1:
++		/* ignore LOG_DEBUG */
++		setlogmask(LOG_UPTO(LOG_INFO));
++		break;
++	case 2:
++		setlogmask(LOG_UPTO(LOG_DEBUG));
+ 	}
+ 
+ #ifndef NO_BACKGROUND_NO_PIDFILE
