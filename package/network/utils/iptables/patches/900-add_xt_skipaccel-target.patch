@@ -8,10 +8,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/extensions/libxt_skipaccel.c
 @@ -0,0 +1,18 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#include <xtables.h>
 +
 +static struct xtables_target skipaccel_tg_reg = {
