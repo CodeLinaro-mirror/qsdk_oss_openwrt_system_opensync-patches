@@ -1,0 +1,89 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- /dev/null
++++ b/extensions/ebt_skipaccel.c
+@@ -0,0 +1,68 @@
++#
++# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++# SPDX-License-Identifier: ISC
++#
++#include "../include/ebtables_u.h"
++#include <stdio.h>
++#include <getopt.h>
++
++static struct option opts[] =
++{
++        { "skipaccel-target" , required_argument, 0, 0},
++        { 0 }
++};
++
++static void print_help()
++{
++        printf("No options for skipaccel!\n");
++}
++
++static void init(struct ebt_entry_target *target)
++{
++    (void)target;
++}
++
++static int parse(int c, char **argv, int argc,
++   const struct ebt_u_entry *entry, unsigned int *flags,
++   struct ebt_entry_target **target)
++{
++    return 0;
++}
++
++static void final_check(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target, const char *name,
++   unsigned int hookmask, unsigned int time)
++{
++    ;
++}
++
++static void print(const struct ebt_u_entry *entry,
++   const struct ebt_entry_target *target)
++{
++    printf("skipaccel_print");
++}
++
++static int compare(const struct ebt_entry_target *t1,
++   const struct ebt_entry_target *t2)
++{
++    return 0;
++}
++
++static struct ebt_u_target skipaccel_target =
++{
++        .name           = "skipaccel",
++        .size           = 0,
++        .help           = print_help,
++        .init           = init,
++        .parse          = parse,
++        .final_check    = final_check,
++        .print          = print,
++        .compare        = compare,
++        .extra_ops      = opts,
++};
++
++__attribute__((constructor)) static void extension_init(void)
++{
++        ebt_register_target(&skipaccel_target);
++}
++
+--- a/extensions/Makefile
++++ b/extensions/Makefile
+@@ -1,7 +1,7 @@
+ #! /usr/bin/make
+ 
+ EXT_FUNC+=802_3 nat arp arpreply ip ip6 standard log redirect vlan mark_m mark \
+-          pkttype stp among limit ulog nflog string
++          pkttype stp among limit ulog nflog string skipaccel
+ EXT_TABLES+=filter nat broute
+ EXT_OBJS+=$(foreach T,$(EXT_FUNC), extensions/ebt_$(T).o)
+ EXT_OBJS+=$(foreach T,$(EXT_TABLES), extensions/ebtable_$(T).o)

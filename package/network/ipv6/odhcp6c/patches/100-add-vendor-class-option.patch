@@ -1,0 +1,75 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/src/odhcp6c.c
++++ b/src/odhcp6c.c
+@@ -84,6 +84,7 @@ static struct odhcp6c_opt opts[] = {
+ 	{ .code = DHCPV6_OPT_RAPID_COMMIT, .flags = OPT_INTERNAL, .str = NULL },
+ 	{ .code = DHCPV6_OPT_USER_CLASS, .flags = OPT_USER_CLASS | OPT_ARRAY, .str = "userclass" },
+ 	{ .code = DHCPV6_OPT_VENDOR_CLASS, .flags = OPT_U8, .str = "vendorclass" },
++	{ .code = DHCPV6_OPT_VENDOR_SPECIFIC, .flags = OPT_U8, .str = "vendorspecific" },
+ 	{ .code = DHCPV6_OPT_INTERFACE_ID, .flags = OPT_INTERNAL, .str = NULL },
+ 	{ .code = DHCPV6_OPT_RECONF_MESSAGE, .flags = OPT_INTERNAL, .str = NULL },
+ 	{ .code = DHCPV6_OPT_RECONF_ACCEPT, .flags = OPT_INTERNAL | OPT_NO_PASSTHRU, .str = NULL },
+@@ -188,7 +189,7 @@ int main(_unused int argc, char* const a
+ 	unsigned int ra_options = RA_RDNSS_DEFAULT_LIFETIME;
+ 	unsigned int ra_holdoff_interval = RA_MIN_ADV_INTERVAL;
+ 
+-	while ((c = getopt(argc, argv, "S::DN:V:P:FB:c:i:r:Ru:Ux:s:kK:t:m:Lhedp:fav")) != -1) {
++	while ((c = getopt(argc, argv, "S::DN:V:X:P:FB:c:i:r:Ru:Ux:s:kK:t:m:Lhedp:fav")) != -1) {
+ 		switch (c) {
+ 		case 'S':
+ 			allow_slaac_only = (optarg) ? atoi(optarg) : -1;
+@@ -234,6 +235,30 @@ int main(_unused int argc, char* const a
+ 			free(o_data);
+ 			break;
+ 
++		case 'X':
++			opt = odhcp6c_find_opt(DHCPV6_OPT_VENDOR_SPECIFIC);
++			if (!opt) {
++				syslog(LOG_ERR, "Failed to set vendor-specific option");
++				return 1;
++			}
++
++			o_data = NULL;
++			res = parse_opt_data(optarg, &o_data, opt->flags & OPT_MASK_SIZE,
++						(opt->flags & OPT_ARRAY) == OPT_ARRAY);
++			if (res > 0) {
++				res = add_opt(opt->code, o_data, res);
++				if (res) {
++					if (res > 0)
++						return 1;
++
++					help = true;
++				}
++			} else
++				help = true;
++
++			free(o_data);
++			break;
++
+ 		case 'P':
+ 			if (ia_pd_mode == IA_MODE_NONE)
+ 				ia_pd_mode = IA_MODE_TRY;
+@@ -617,6 +642,7 @@ static int usage(void)
+ 	"	-P <length>	Request IPv6-Prefix (0 = auto)\n"
+ 	"	-F		Force IPv6-Prefix\n"
+ 	"	-V <class>	Set vendor-class option (base-16 encoded)\n"
++	"	-X <options>	Set vendor-specific option (base-16 encoded)\n"
+ 	"	-u <user-class> Set user-class option string\n"
+ 	"	-x <opt>:<val>	Add option opt (with value val) in sent packets (cumulative)\n"
+ 	"			Examples of IPv6 address, string and base-16 encoded options:\n"
+--- a/src/odhcp6c.h
++++ b/src/odhcp6c.h
+@@ -51,6 +51,7 @@ enum dhcvp6_opt {
+ 	DHCPV6_OPT_RAPID_COMMIT = 14,
+ 	DHCPV6_OPT_USER_CLASS = 15,
+ 	DHCPV6_OPT_VENDOR_CLASS = 16,
++	DHCPV6_OPT_VENDOR_SPECIFIC = 17,
+ 	DHCPV6_OPT_INTERFACE_ID = 18,
+ 	DHCPV6_OPT_RECONF_MESSAGE = 19,
+ 	DHCPV6_OPT_RECONF_ACCEPT = 20,

@@ -1,0 +1,44 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+miniupnpd 2.2 added check against private/reserved IP addresses.
+Among others, 192.168.x.x is considered private, which conflicts with
+OSRTs 192.168.200.x. Now it became not suitable for external IP,
+miniupnpd returning  `UPnPError 501: Action Failed`,
+`private/reserved address 192.168.200.x is not suitable for external IP`.
+With this patch the new private/reserved IP addresses check is skipped,
+this way keeping the miniupnpd 2.1 behavior.  
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/getifaddr.c
++++ b/getifaddr.c
+@@ -304,6 +304,7 @@ static const struct { uint32_t address;
+ int
+ addr_is_reserved(struct in_addr * addr)
+ {
++#if 0
+ 	uint32_t address = ntohl(addr->s_addr);
+ 	size_t i;
+ 
+@@ -311,6 +312,6 @@ addr_is_reserved(struct in_addr * addr)
+ 		if ((address >> reserved[i].rmask) == (reserved[i].address >> reserved[i].rmask))
+ 			return 1;
+ 	}
+-
++#endif
+ 	return 0;
+ }
+--- a/miniupnpd.c
++++ b/miniupnpd.c
+@@ -958,7 +958,7 @@ parselanaddr(struct lan_addr_s * lan_add
+ 		if(!inet_aton(lan_addr->str, &lan_addr->addr))
+ 			goto parselan_error;
+ 	}
+-	if(!addr_is_reserved(&lan_addr->addr)) {
++	if(0) {
+ 		INIT_PRINT_ERR("Error: LAN address contains public IP address : %s\n", lan_addr->str);
+ 		INIT_PRINT_ERR("Public IP address can be configured via ext_ip= option\n");
+ 		INIT_PRINT_ERR("LAN address should contain private address, e.g. from 192.168. block\n");

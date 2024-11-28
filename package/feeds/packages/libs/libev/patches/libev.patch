@@ -1,0 +1,203 @@
+From a0e8048909cd96c0b4028c51cb4f9b78eda960e2 Mon Sep 17 00:00:00 2001
+From: Atchaya R <quic_ratchaya@quicinc.com>
+Date: Fri, 20 Sep 2024 09:59:44 +0530
+Subject: [PATCH] openwrt patches for opensync
+
+Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
+
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -10,11 +10,11 @@ EXTRA_DIST = LICENSE Changes libev.m4 au
+ 
+ man_MANS = ev.3
+ 
+-include_HEADERS = ev.h ev++.h event.h
++include_HEADERS = ev.h ev++.h event.h ev_trace.h
+ 
+ lib_LTLIBRARIES = libev.la
+ 
+-libev_la_SOURCES = ev.c event.c
++libev_la_SOURCES = ev.c event.c ev_trace.c
+ libev_la_LDFLAGS = -version-info $(VERSION_INFO)
+ 
+ ev.3: ev.pod
+--- a/ev.c
++++ b/ev.c
+@@ -3348,6 +3348,7 @@ loop_init (EV_P_ unsigned int flags) EV_
+       ev_prepare_init (&pending_w, pendingcb);
+ 
+ #if EV_SIGNAL_ENABLE || EV_ASYNC_ENABLE
++      ev_trace_map(pipecb, "pipecb");
+       ev_init (&pipe_w, pipecb);
+       ev_set_priority (&pipe_w, EV_MAXPRI);
+ #endif
+@@ -3712,6 +3713,7 @@ ev_default_loop (unsigned int flags) EV_
+       if (ev_backend (EV_A))
+         {
+ #if EV_CHILD_ENABLE
++          ev_trace_map(childcb, "childcb");
+           ev_signal_init (&childev, childcb, SIGCHLD);
+           ev_set_priority (&childev, EV_MAXPRI);
+           ev_signal_start (EV_A_ &childev);
+@@ -4583,7 +4585,7 @@ ev_signal_start (EV_P_ ev_signal *w) EV_
+           fd_intern (sigfd); /* doing it twice will not hurt */
+ 
+           sigemptyset (&sigfd_set);
+-
++          ev_trace_map(sigfdcb, "sigfdcb");
+           ev_io_init (&sigfd_w, sigfdcb, sigfd, EV_READ);
+           ev_set_priority (&sigfd_w, EV_MAXPRI);
+           ev_io_start (EV_A_ &sigfd_w);
+@@ -4908,6 +4910,7 @@ infy_init (EV_P)
+   if (fs_fd >= 0)
+     {
+       fd_intern (fs_fd);
++      ev_trace_map(infy_cb, "infy_cb");
+       ev_io_init (&fs_w, infy_cb, fs_fd, EV_READ);
+       ev_set_priority (&fs_w, EV_MAXPRI);
+       ev_io_start (EV_A_ &fs_w);
+@@ -5030,6 +5033,7 @@ ev_stat_start (EV_P_ ev_stat *w) EV_NOEX
+   if (w->interval < MIN_STAT_INTERVAL && w->interval)
+     w->interval = MIN_STAT_INTERVAL;
+ 
++  ev_trace_map(stat_timer_cb, "stat_timer_cb");
+   ev_timer_init (&w->timer, stat_timer_cb, 0., w->interval ? w->interval : DEF_STAT_INTERVAL);
+   ev_set_priority (&w->timer, ev_priority (w));
+ 
+@@ -5269,6 +5273,7 @@ ev_embed_start (EV_P_ ev_embed *w) EV_NO
+   {
+     EV_P = w->other;
+     assert (("libev: loop to be embedded is not embeddable", backend & ev_embeddable_backends ()));
++    ev_trace_map(embed_io_cb, "embed_io_cb");
+     ev_io_init (&w->io, embed_io_cb, backend_fd, EV_READ);
+   }
+ 
+@@ -5277,11 +5282,13 @@ ev_embed_start (EV_P_ ev_embed *w) EV_NO
+   ev_set_priority (&w->io, ev_priority (w));
+   ev_io_start (EV_A_ &w->io);
+ 
++  ev_trace_map(embed_prepare_cb, "embed_prepare_cb");
+   ev_prepare_init (&w->prepare, embed_prepare_cb);
+   ev_set_priority (&w->prepare, EV_MINPRI);
+   ev_prepare_start (EV_A_ &w->prepare);
+ 
+ #if EV_FORK_ENABLE
++  ev_trace_map(embed_fork_cb, "embed_fork_cb");
+   ev_fork_init (&w->fork, embed_fork_cb);
+   ev_fork_start (EV_A_ &w->fork);
+ #endif
+@@ -5489,6 +5496,7 @@ ev_once (EV_P_ int fd, int events, ev_ts
+   once->cb  = cb;
+   once->arg = arg;
+ 
++  ev_trace_map(once_cb_io, "once_cb_io");
+   ev_init (&once->io, once_cb_io);
+   if (fd >= 0)
+     {
+@@ -5496,6 +5504,7 @@ ev_once (EV_P_ int fd, int events, ev_ts
+       ev_io_start (EV_A_ &once->io);
+     }
+ 
++  ev_trace_map(once_cb_to, "once_cb_to");
+   ev_init (&once->to, once_cb_to);
+   if (timeout >= 0.)
+     {
+--- a/ev.h
++++ b/ev.h
+@@ -253,7 +253,13 @@ enum {
+ # define EV_CB_DECLARE(type) void (*cb)(EV_P_ struct type *w, int revents);
+ #endif
+ #ifndef EV_CB_INVOKE
+-# define EV_CB_INVOKE(watcher,revents) (watcher)->cb (EV_A_ (watcher), (revents))
++#include "ev_trace.h"
++# define EV_CB_INVOKE(watcher,revents) do {     \
++    void *cb = (watcher)->cb;                   \
++    ev_trace_call(cb, EV_ENTER);                \
++    (watcher)->cb (EV_A_ (watcher), (revents)); \
++    ev_trace_call(cb, EV_EXIT);                 \
++    } while (0)
+ #endif
+ 
+ /* not official, do not use */
+--- /dev/null
++++ b/ev_trace.c
+@@ -0,0 +1,40 @@
++#
++# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++# SPDX-License-Identifier: ISC
++#
++#include "ev_trace.h"
++#include "ev.h"
++
++static struct ev_trace_mgr mgr =
++{
++    .initialized = 0,
++};
++
++int
++ev_trace_init(struct ev_trace_setting *setting)
++{
++    if (setting == NULL) return -1;
++
++    if (setting->tracer == NULL) return -1;
++    if (setting->mapper == NULL) return -1;
++
++    mgr.tracer = setting->tracer;
++    mgr.mapper = setting->mapper;
++
++    mgr.initialized = 1;
++}
++
++void
++ev_trace_call(void *p, int tracer)
++{
++    if (!mgr.initialized) return;
++    mgr.tracer(p, tracer);
++}
++
++
++void
++ev_trace_map(void *p, const char *fname)
++{
++    if (!mgr.initialized) return;
++    mgr.mapper(p, fname);
++}
+--- /dev/null
++++ b/ev_trace.h
+@@ -0,0 +1,36 @@
++#
++# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++# SPDX-License-Identifier: ISC
++#
++#ifndef EV_TRACE_H_
++#define EV_TRACE_H_
++
++enum
++{
++    EV_ENTER = 0,
++    EV_EXIT = 1,
++};
++
++typedef void (*ev_trace_func_t)(void *p, int tracer);
++typedef void (*ev_trace_register_func_t)(void *p, const char *fname);
++
++struct ev_trace_mgr
++{
++    int initialized;
++    ev_trace_func_t tracer;
++    ev_trace_register_func_t mapper;
++};
++
++struct ev_trace_setting
++{
++    ev_trace_func_t tracer;
++    ev_trace_register_func_t mapper;
++};
++
++int
++ev_trace_init(struct ev_trace_setting *setting);
++
++void
++ev_trace_map(void *p, const char *fname);
++
++#endif /* EV_TRACE_H_ */
