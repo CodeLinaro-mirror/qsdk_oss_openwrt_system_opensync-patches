@@ -1,0 +1,22 @@
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Thu, 26 Sep 2024 13:10:14 +0530
+Subject: [PATCH] Add support for various fixes in nss drivers
+
+Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
+
+--- a/sfe.c
++++ b/sfe.c
+@@ -2055,6 +2055,13 @@ int sfe_recv(struct sk_buff *skb)
+ 	dev = skb->dev;
+ 
+ 	/*
++	 * Reset fast_forwarded flag, this should allow decapsulated packets coming
++	 * from a tunnel to be seen by PCAP again. If the decapsulated packet is also
++	 * accelerated by SFE, fast_forwarded flag will be set to 1 again by SFE.
++	 */
++	skb->fast_forwarded = 0;
++
++	/*
+ 	 * Setting parse flags to 0 since l2_info is passed for non L2.5 header case as well
+ 	 */
+ 	l2_info.parse_flags = 0;
