@@ -144,10 +144,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/iptscript/iptscript.c
 @@ -0,0 +1,753 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#include <netinet/in.h>
 +
 +#include <sys/types.h>
@@ -900,10 +900,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/iptscript/iptscript.h
 @@ -0,0 +1,42 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#ifndef IPTSCRIPT_H_INCLUDED
 +#define IPTSCRIPT_H_INCLUDED
 +
@@ -945,11 +945,11 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/iptscript/iptscript.sh
 @@ -0,0 +1,85 @@
++#!/bin/sh
 +#
 +# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
 +# SPDX-License-Identifier: ISC
 +#
-+#!/bin/sh
 +
 +IPTABLES="iptables --wait"
 +
