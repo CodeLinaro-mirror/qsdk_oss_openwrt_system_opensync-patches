@@ -1,0 +1,145 @@
+From 832218aa47c4b808d46c439831991bc1905226f8 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Thu, 26 Sep 2024 13:10:14 +0530
+Subject: [PATCH] Add support for various fixes in nss drivers
+
+Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
+
+--- a/frontends/cmn/ecm_ipv4.c
++++ b/frontends/cmn/ecm_ipv4.c
+@@ -1780,6 +1780,114 @@ skip_ipv4_vlan_process:
+ 	return result;
+ }
+ 
++/* OpenSync acceleration flush packet */
++#define FF_MAX_PAYLOAD		48			// max payload size
++#define FLUSH_COOKIE		0xDA2C5588	// cookie for flush message
++#define LLC_CR				0x01		// Response Bit
++#define LLC_TEST_RSP		0xF3		// LLC frame TEST response
++#define ETH_P_PLUME_FM		0x33		// LLC frame size == llc packet length
++#define CT_MARK_FSM_MASK	0xFFFF		// OpenSync FSM ct mark mask
++
++struct llc_hdr {
++    uint8_t     dsap;
++    uint8_t     ssap;
++    uint8_t     control;
++} __attribute__ ((packed)) ;
++
++struct accel_evict_msg {
++    struct ethhdr      eth_hdr;
++    struct llc_hdr     llc_hdr;
++    uint8_t            data[FF_MAX_PAYLOAD];
++} __attribute__ ((packed)) ;
++
++/* OpenSync Flush packet parse */
++bool ecm_ipv4_parse_flush_packet(struct accel_evict_msg *evict_msg,
++				      struct nf_conntrack_tuple *tuple,
++				      uint32_t *ct_mark)
++{
++	uint32_t cookie, ip_len;
++	int ip_ver, index = 0;
++
++	memcpy(&cookie, &evict_msg->data[index], 4);
++	index += 4;
++
++	if (cookie != FLUSH_COOKIE)
++		return false;
++
++	/* Initialize conntrack tuple */
++	memset(tuple, 0, sizeof(*tuple));
++	tuple->dst.dir = IP_CT_DIR_ORIGINAL;
++
++	/* Parse L3 protocol (IPv4/IPv6) */
++	ip_ver = (int)evict_msg->data[index];
++	index += 1;
++
++	ip_len = (ip_ver == 4) ? 4 : 16;
++	tuple->src.l3num = (ip_ver == 4) ? NFPROTO_IPV4 : NFPROTO_IPV6;
++
++	/* Parse L4 protocol */
++	tuple->dst.protonum = (int)evict_msg->data[index];
++	index += 1;
++
++	/* Parse IP addresses */
++	memcpy(tuple->src.u3.all, &evict_msg->data[index], ip_len);
++	index += ip_len;
++	memcpy(tuple->dst.u3.all, &evict_msg->data[index], ip_len);
++	index += ip_len;
++
++	/* Parse L4 ports */
++	memcpy(&tuple->src.u.all, &evict_msg->data[index], 2);
++	index += 2;
++	memcpy(&tuple->dst.u.all, &evict_msg->data[index], 2);
++	index += 2;
++
++	/* Parse conntrack mark */
++	memcpy(ct_mark, &evict_msg->data[index], 4);
++	return true;
++}
++
++/* OpenSync acceleration flush packet */
++void ecm_ipv4_process_flush_packet(struct accel_evict_msg *evict_msg)
++{
++	struct nf_conntrack_tuple tuple;
++	struct nf_conntrack_tuple_hash *tuple_hash;
++	struct nf_conn *ct;
++	uint32_t new_ctmark;
++
++	if (!ecm_ipv4_parse_flush_packet(evict_msg, &tuple, &new_ctmark)) {
++		DEBUG_TRACE("unable to parse flush packet\n");
++		return;
++	}
++
++	if (tuple.src.l3num == NFPROTO_IPV4) {
++		DEBUG_TRACE("parsed IPv4 tuple - IP src: %pI4(%u), IP dst: %pI4(%u), proto: %u - ct mark: %u\n",
++			    &tuple.src.u3.ip, ntohs(tuple.src.u.all),
++			    &tuple.dst.u3.ip, ntohs(tuple.dst.u.all),
++			    tuple.dst.protonum, new_ctmark);
++	} else {
++		DEBUG_TRACE("parsed IPv6 tuple - IP src: %pI6(%u), IP dst: %pI6(%u), proto: %u - ct mark: %u\n",
++			    tuple.src.u3.ip6, ntohs(tuple.src.u.all),
++			    tuple.dst.u3.ip6, ntohs(tuple.dst.u.all),
++			    tuple.dst.protonum, new_ctmark);
++	}
++
++	tuple_hash = nf_conntrack_find_get(&init_net, &nf_ct_zone_dflt, &tuple);
++	if (tuple_hash == NULL) {
++		DEBUG_TRACE("unable to find tuple_hash\n");
++		return;
++	}
++
++	/* No need to check if ct == NULL */
++	ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
++	if ((ct->mark & CT_MARK_FSM_MASK) != (new_ctmark & CT_MARK_FSM_MASK)) {
++		DEBUG_TRACE("%px: conntrack mark applied from flush packet: %u -> %u\n", ct, ct->mark, new_ctmark);
++		ct->mark = (ct->mark & ~CT_MARK_FSM_MASK) | (new_ctmark & CT_MARK_FSM_MASK);
++		nf_conntrack_event_cache(IPCT_MARK, ct);
++	}
++
++	nf_ct_put(ct);
++}
++
+ /*
+  * ecm_ipv4_bridge_post_routing_hook()
+  *	Called for packets that are going out to one of the bridge physical interfaces.
+@@ -1803,6 +1911,20 @@ static unsigned int ecm_ipv4_bridge_post
+ 
+ 	DEBUG_TRACE("%px: IPv4 CMN Bridge: %s skb=%px\n", out, out->name, skb);
+ 
++	if (ntohs(skb->protocol) == ETH_P_802_2)
++	{
++		struct accel_evict_msg *ff_frame;
++		struct ethhdr *ethdr = eth_hdr(skb);
++
++		DEBUG_TRACE("processing flush packet\n");
++		if (ethdr != NULL && ethdr->h_proto == htons(ETH_P_PLUME_FM)/*  && skb->len == sizeof(struct accel_evict_msg) */)
++		{
++			ff_frame = (struct accel_evict_msg *)ethdr;
++			ecm_ipv4_process_flush_packet(ff_frame);
++			return NF_ACCEPT;
++		}
++	}
++
+ 	/*
+ 	 * If operations have stopped then do not process packets
+ 	 */

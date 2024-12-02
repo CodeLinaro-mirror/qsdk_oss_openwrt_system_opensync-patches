@@ -1,0 +1,275 @@
+From 832218aa47c4b808d46c439831991bc1905226f8 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <quic_msezgin@quicinc.com>
+Date: Thu, 26 Sep 2024 13:10:14 +0530
+Subject: [PATCH] Add support for various fixes in nss drivers
+
+Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
+
+--- a/ecm_db/ecm_db_types.h
++++ b/ecm_db/ecm_db_types.h
+@@ -239,6 +239,7 @@ enum ecm_db_directions {
+ 	ECM_DB_DIRECTION_INGRESS_NAT,			/* WAN->LAN NAT */
+ 	ECM_DB_DIRECTION_NON_NAT,			/* NET<>NET */
+ 	ECM_DB_DIRECTION_BRIDGED,			/* BRIDGED */
++	ECM_DB_DIRECTION_NAT_LOOPBACK,		/* NAT_LOOPBACK*/
+ };
+ typedef enum ecm_db_directions ecm_db_direction_t;
+ 
+--- a/frontends/include/ecm_front_end_common.h
++++ b/frontends/include/ecm_front_end_common.h
+@@ -21,6 +21,7 @@
+ #define __ECM_FRONT_END_COMMON_H
+ 
+ #include <linux/if_pppox.h>
++#include <linux/netfilter_bridge.h>
+ #include <net/netfilter/nf_conntrack.h>
+ #include <net/netfilter/nf_conntrack_acct.h>
+ #include "ecm_bond_notifier.h"
+@@ -75,6 +76,37 @@ extern unsigned int ecm_sfe_fse_enable;
+ extern unsigned int ecm_sfe_mht_enable;
+ #endif
+ 
++static inline bool ecm_front_end_is_nat_loopback(struct nf_conn *ct, struct net_device *in, struct net_device *out, struct sk_buff *skb)
++{
++	struct nf_conntrack_tuple orig_tuple;
++	struct nf_conntrack_tuple reply_tuple;
++	struct nf_bridge_info *nf_bridge = NULL;
++
++	if (!ct)
++		return false;
++
++	if(!skb)
++		return false;
++
++	nf_bridge = nf_bridge_info_get(skb);
++	if(!nf_bridge || !nf_bridge->physindev || !nf_bridge->physoutdev)
++		return false;
++
++	if (!ecm_front_end_is_bridge_port(nf_bridge->physindev) || !ecm_front_end_is_bridge_port(nf_bridge->physoutdev))
++		return false;
++
++	orig_tuple = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
++	reply_tuple = ct->tuplehash[IP_CT_DIR_REPLY].tuple;
++
++
++	if ((orig_tuple.src.u3.ip != orig_tuple.dst.u3.ip) && (reply_tuple.src.u3.ip != reply_tuple.dst.u3.ip) && \
++		(orig_tuple.src.u3.ip != reply_tuple.src.u3.ip) && (orig_tuple.dst.u3.ip != reply_tuple.dst.u3.ip) &&
++		(orig_tuple.src.u3.ip != reply_tuple.dst.u3.ip) && (orig_tuple.dst.u3.ip != reply_tuple.src.u3.ip))
++		return true;
++
++	return false;
++}
++
+ /*
+  * ecm_front_end_l2_encap_header_len()
+  *      Return length of encapsulating L2 header
+--- a/frontends/cmn/ecm_ipv4.c
++++ b/frontends/cmn/ecm_ipv4.c
+@@ -1216,26 +1216,38 @@ vxlan_done:
+ 	 * Work out if this packet involves NAT or not.
+ 	 * If it does involve NAT then work out if this is an ingressing or egressing packet.
+ 	 */
+-	if (orig_tuple.src.u3.ip != reply_tuple.dst.u3.ip) {
++	if (ecm_front_end_is_nat_loopback(ct, in_dev, out_dev, skb)) {
++		/*
++		 * NAT loopback
++		 */
++		is_routed = false;
++		ecm_dir = ECM_DB_DIRECTION_NAT_LOOPBACK;
++		DEBUG_TRACE("ecm_dir = ECM_DB_DIRECTION_NAT_LOOPBACK\n");
++	}
++	else if (orig_tuple.src.u3.ip != reply_tuple.dst.u3.ip) {
+ 		/*
+ 		 * Egressing NAT
+ 		 */
+ 		ecm_dir = ECM_DB_DIRECTION_EGRESS_NAT;
++		DEBUG_TRACE("ecm_dir = ECM_DB_DIRECTION_EGRESS_NAT\n");
+ 	} else if (orig_tuple.dst.u3.ip != reply_tuple.src.u3.ip) {
+ 		/*
+ 		 * Ingressing NAT
+ 		 */
+ 		ecm_dir = ECM_DB_DIRECTION_INGRESS_NAT;
++		DEBUG_TRACE("ecm_dir = ECM_DB_DIRECTION_INGRESS_NAT\n");
+ 	} else if (is_routed) {
+ 		/*
+ 		 * Non-NAT
+ 		 */
+ 		ecm_dir = ECM_DB_DIRECTION_NON_NAT;
++		DEBUG_TRACE("ecm_dir = ECM_DB_DIRECTION_NON_NAT\n");
+ 	} else {
+ 		/*
+ 		 * Bridged
+ 		 */
+ 		ecm_dir = ECM_DB_DIRECTION_BRIDGED;
++		DEBUG_TRACE("ecm_dir = ECM_DB_DIRECTION_BRIDGED\n");
+ 	}
+ 
+ 	/*
+@@ -1247,7 +1259,7 @@ vxlan_done:
+ 	 * and wait for the packet to pass through the post routing hook.
+ 	 *
+ 	 */
+-	if (!is_routed && (ecm_dir != ECM_DB_DIRECTION_BRIDGED)) {
++	if (!is_routed && (ecm_dir < ECM_DB_DIRECTION_BRIDGED)) {
+ 		DEBUG_TRACE("Packet comes from bridge post routing hook but ecm_dir is not bridge\n");
+ 		return NF_ACCEPT;
+ 	}
+@@ -1458,6 +1470,20 @@ vxlan_done:
+ 			src_node_addr_nat = src_node_addr;
+ 
+ 			dest_node_addr_nat = dest_node_addr;
++		} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++			/*
++			 * Example 7
++			 */
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_src_addr, orig_tuple.src.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_dest_addr, reply_tuple.src.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_dest_addr_nat, orig_tuple.dst.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_src_addr_nat, reply_tuple.dst.u3.ip);
++
++			in_dev_nat = in_dev;
++			out_dev_nat = out_dev;
++
++			src_node_addr_nat = src_node_addr;
++			dest_node_addr_nat = dest_node_addr;
+ 		} else {
+ 			DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 		}
+@@ -1509,11 +1535,32 @@ vxlan_done:
+ 			src_node_addr_nat = src_node_addr;
+ 
+ 			dest_node_addr_nat = dest_node_addr;
++		} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++			/*
++			 * Example 7
++			 */
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_dest_addr, orig_tuple.src.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_src_addr, reply_tuple.src.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_src_addr_nat, orig_tuple.dst.u3.ip);
++			ECM_NIN4_ADDR_TO_IP_ADDR(ip_dest_addr_nat, reply_tuple.dst.u3.ip);
++
++			in_dev_nat  = in_dev;
++			out_dev_nat = out_dev;
++
++			src_node_addr_nat = src_node_addr;
++			dest_node_addr_nat = dest_node_addr;
+ 		} else {
+ 			DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 		}
+ 	}
+ 
++	DEBUG_TRACE("IP Packet: %s ORIGINAL: %pI4->%pI4 %d->%d, protocol: %u, sender: %d ecm_dir: %d\n", (sender == ECM_TRACKER_SENDER_TYPE_SRC) ? "src":"dst", &orig_tuple.src.u3.ip, &orig_tuple.dst.u3.ip,\
++			ntohs(orig_tuple.src.u.tcp.port), ntohs(orig_tuple.dst.u.tcp.port), orig_tuple.dst.protonum, sender, ecm_dir);
++	DEBUG_TRACE("IP Packet: %s REPLY: %pI4->%pI4 %d->%d, protocol: %u, sender: %d ecm_dir: %d\n", (sender == ECM_TRACKER_SENDER_TYPE_SRC) ? "src":"dst", &reply_tuple.src.u3.ip, &reply_tuple.dst.u3.ip, \
++			ntohs(reply_tuple.src.u.tcp.port), ntohs(reply_tuple.dst.u.tcp.port), reply_tuple.dst.protonum, sender, ecm_dir);
++	DEBUG_TRACE("IP Packet: %s L2: %pM->%pM, NAT L2: %pM->%pM\n", (sender == ECM_TRACKER_SENDER_TYPE_SRC) ? "src":"dst", src_node_addr, dest_node_addr, src_node_addr_nat, dest_node_addr_nat);
++	DEBUG_TRACE("IP Packet: %s devs: %s->%s, NAT dev: %s->%s\n",(sender == ECM_TRACKER_SENDER_TYPE_SRC) ? "src":"dst", in_dev->name, out_dev->name, in_dev_nat->name, out_dev_nat->name);
++
+ 	/*
+ 	 * Non-unicast source or destination packets are ignored
+ 	 * NOTE: Only need to check the non-nat src/dest addresses here.
+--- a/frontends/sfe/ecm_sfe_ported_ipv4.c
++++ b/frontends/sfe/ecm_sfe_ported_ipv4.c
+@@ -1125,7 +1125,7 @@ static void ecm_sfe_ported_ipv4_connecti
+ 	/*
+ 	 * Routed or bridged?
+ 	 */
+-	if (ecm_db_connection_is_routed_get(feci->ci)) {
++	if (ecm_db_connection_is_routed_get(feci->ci) || feci->ci->direction == ECM_DB_DIRECTION_NAT_LOOPBACK) {
+ 		nircm->rule_flags |= SFE_RULE_CREATE_FLAG_ROUTED;
+ 	} else {
+ 		nircm->rule_flags |= SFE_RULE_CREATE_FLAG_BRIDGE_FLOW;
+--- a/frontends/ppe/ecm_ppe_ported_ipv4.c
++++ b/frontends/ppe/ecm_ppe_ported_ipv4.c
+@@ -980,7 +980,7 @@ static void ecm_ppe_ported_ipv4_connecti
+ 	 * For bridged connections this does not change.
+ 	 * For routed connections this is the mac of the 'to' node side of the connection.
+ 	 */
+-	if (ecm_db_connection_is_routed_get(feci->ci)) {
++	if (ecm_db_connection_is_routed_get(feci->ci) || feci->ci->direction == ECM_DB_DIRECTION_NAT_LOOPBACK) {
+ 		pd4rc->rule_flags |= PPE_DRV_V4_RULE_FLAG_ROUTED_FLOW;
+ 		ecm_db_connection_node_address_get(feci->ci, ECM_DB_OBJ_DIR_TO, dest_mac_xlate);
+ 	} else {
+--- a/frontends/cmn/ecm_ported_ipv4.c
++++ b/frontends/cmn/ecm_ported_ipv4.c
+@@ -218,6 +218,11 @@ unsigned int ecm_ported_ipv4_process(str
+ 				dest_port = ntohs(orig_tuple->dst.u.tcp.port);
+ 				dest_port_nat = ntohs(reply_tuple->src.u.tcp.port);
+ 				src_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
++			} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++				src_port = ntohs(orig_tuple->src.u.tcp.port);
++				dest_port = ntohs(reply_tuple->src.u.tcp.port);
++				dest_port_nat = ntohs(orig_tuple->dst.u.tcp.port);
++				src_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
+ 			} else {
+ 				DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 			}
+@@ -237,6 +242,12 @@ unsigned int ecm_ported_ipv4_process(str
+ 				src_port = ntohs(orig_tuple->dst.u.tcp.port);
+ 				src_port_nat = ntohs(reply_tuple->src.u.tcp.port);
+ 				dest_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
++			} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++				dest_port = ntohs(orig_tuple->src.u.tcp.port);
++				src_port = ntohs(reply_tuple->src.u.tcp.port);
++				src_port_nat = ntohs(orig_tuple->dst.u.tcp.port);
++				dest_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
++
+ 			} else {
+ 				DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 			}
+@@ -304,6 +315,12 @@ unsigned int ecm_ported_ipv4_process(str
+ 				dest_port = ntohs(orig_tuple->dst.u.udp.port);
+ 				dest_port_nat = ntohs(reply_tuple->src.u.udp.port);
+ 				src_port_nat = ntohs(reply_tuple->dst.u.udp.port);
++			} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++				src_port = ntohs(orig_tuple->src.u.tcp.port);
++				dest_port = ntohs(reply_tuple->src.u.tcp.port);
++				dest_port_nat = ntohs(orig_tuple->dst.u.tcp.port);
++				src_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
++
+ 			} else {
+ 				DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 			}
+@@ -323,6 +340,11 @@ unsigned int ecm_ported_ipv4_process(str
+ 				src_port = ntohs(orig_tuple->dst.u.udp.port);
+ 				src_port_nat = ntohs(reply_tuple->src.u.udp.port);
+ 				dest_port_nat = ntohs(reply_tuple->dst.u.udp.port);
++			} else if (ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK) {
++				dest_port = ntohs(orig_tuple->src.u.tcp.port);
++				src_port = ntohs(reply_tuple->src.u.tcp.port);
++				src_port_nat = ntohs(orig_tuple->dst.u.tcp.port);
++				dest_port_nat = ntohs(reply_tuple->dst.u.tcp.port);
+ 			} else {
+ 				DEBUG_ASSERT(false, "Unhandled ecm_dir: %d\n", ecm_dir);
+ 			}
+--- a/frontends/ecm_front_end_ipv4.c
++++ b/frontends/ecm_front_end_ipv4.c
+@@ -258,7 +258,7 @@ bool ecm_front_end_ipv4_interface_constr
+ 	 *
+ 	 * TODO: Why ecm_dir comes as non-bridge flow, even though the is_routed flag is bridged?
+ 	 */
+-	if (ecm_dir != ECM_DB_DIRECTION_BRIDGED) {
++	if (ecm_dir < ECM_DB_DIRECTION_BRIDGED) {
+ 		if (!dst || !dst_dev || !rt_iif_dev) {
+ 			DEBUG_WARN("Traffic is not bridged but the netdevs are not valid\n");
+ 			if (rt_iif_dev) {
+@@ -312,7 +312,8 @@ bool ecm_front_end_ipv4_interface_constr
+ 			from_nat_other = dst_dev;
+ 			to_nat = rt_iif_dev;
+ 			to_nat_other = dst_dev;
+-		} else if (ecm_dir == ECM_DB_DIRECTION_BRIDGED) {
++		} else if ((ecm_dir == ECM_DB_DIRECTION_BRIDGED) || \
++					(ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK)) {
+ 			from_nat = in_dev;
+ 			from_nat_other = in_dev;
+ 			to_nat = out_dev;
+@@ -336,7 +337,8 @@ bool ecm_front_end_ipv4_interface_constr
+ 			from_nat_other = rt_iif_dev;
+ 			to_nat = dst_dev;
+ 			to_nat_other = rt_iif_dev;
+-		} else if (ecm_dir == ECM_DB_DIRECTION_BRIDGED) {
++		} else if ((ecm_dir == ECM_DB_DIRECTION_BRIDGED) || \
++					(ecm_dir == ECM_DB_DIRECTION_NAT_LOOPBACK)) {
+ 			from_nat = in_dev;
+ 			from_nat_other = in_dev;
+ 			to_nat = out_dev;
