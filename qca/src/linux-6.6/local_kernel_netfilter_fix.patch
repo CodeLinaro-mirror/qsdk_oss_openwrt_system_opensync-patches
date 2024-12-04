@@ -1,0 +1,433 @@
+Author: Deepak kumar <quic_deepaku@quicinc.com>
+Date: Tue Nov 19 13:37:15 2024
+
+    opensync: add below  fix and functionality for opensync flow
+
+1. include/uapi/linux/if_tunnel.h 
+Add MAP RFC draft03 capability macro to kernel uapi headers
+2. br_input.c 
+This patch makes bridged ARP, DHCP and ICMPv6 traffic always be passed up
+through bridge interface as if promiscuous mode was enabled on that bridge
+interface. This allows pcap on said bridge interface to detect this traffic
+even if the packet is unicast.
+3. net/sched/sch_htb.c
+HTB qdisc bandwidth sharing opt for openysnc
+4. drivers/net/phy/phy.c
+ This changes corrects the incorrect speed status displayed by ethtool when a link is disconnected
+5. net/netfilter/Kconfig net/netfilter/Makefile
+netfilter-enable-xt-skipaccel for opensync
+6. include/linux/skbuff.h 
+Add dp-flags to skbuff structure to avoid packet acceleration
+7. net/ipv4/netfilter/nf_nat_pptp.c 
+Add null check in nat_pptp_info
+
+Signed-off-by: Deepak kumar <quic_deepaku@quicinc.com>
+diff --git a/drivers/net/phy/phy.c b/drivers/net/phy/phy.c
+index df54c137c5f5..1c514f746dc8 100644
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -308,6 +308,8 @@ void phy_ethtool_ksettings_get(struct phy_device *phydev,
+ 	cmd->base.autoneg = phydev->autoneg;
+ 	cmd->base.eth_tp_mdix_ctrl = phydev->mdix_ctrl;
+ 	cmd->base.eth_tp_mdix = phydev->mdix;
++	if(!phydev->link)
++		cmd->base.speed = 0; /*PHY_SPEED_UNKNOWN*/
+ 	mutex_unlock(&phydev->lock);
+ }
+ EXPORT_SYMBOL(phy_ethtool_ksettings_get);
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 9a07a4087686..077f1322a897 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -683,6 +683,10 @@ enum {
+ 	SKB_GSO_FRAGLIST = 1 << 18,
+ };
+ 
++enum {
++    DP_FLAG_SKIPACCEL = 1 << 0, /* packet should NOT be accelerated */
++};
++
+ #if BITS_PER_LONG > 32
+ #define NET_SKBUFF_DATA_USES_OFFSET 1
+ #endif
+@@ -1066,11 +1070,11 @@ struct sk_buff {
+ 	__u16			transport_header;
+ 	__u16			network_header;
+ 	__u16			mac_header;
+-
++       /* Flags used for data-path */
++       __u32                   dp_flags;
+ #ifdef CONFIG_KCOV
+ 	u64			kcov_handle;
+ #endif
+-
+ 	); /* end headers group */
+ 
+ 	/* These elements must be at the end, see alloc_skb() for details.  */
+diff --git a/include/uapi/linux/if_tunnel.h b/include/uapi/linux/if_tunnel.h
+index 23a03a67fdb9..608e65043623 100644
+--- a/include/uapi/linux/if_tunnel.h
++++ b/include/uapi/linux/if_tunnel.h
+@@ -82,7 +82,7 @@ enum {
+ 	__IFLA_IPTUN_MAX,
+ };
+ #define IFLA_IPTUN_MAX	(__IFLA_IPTUN_MAX - 1)
+-
++#define _IFLA_IPTUN_HAS_DRAFT03_
+ enum {
+ 	IFLA_IPTUN_FMR_UNSPEC,
+ 	IFLA_IPTUN_FMR_IP6_PREFIX,
+diff --git a/include/uapi/linux/pkt_sched.h b/include/uapi/linux/pkt_sched.h
+index b3184f5a3d14..a760cc1bcb24 100644
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -548,6 +548,7 @@ struct tc_htb_opt {
+ 	__u32	quantum;
+ 	__u32	level;		/* out only */
+ 	__u32	prio;
++	__u32   shared;
+ };
+ struct tc_htb_glob {
+ 	__u32 version;		/* to match HTB/TC */
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index 3ad65c2a2947..bb44efb945b6 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -79,6 +79,37 @@ int br_pass_frame_up(struct sk_buff *skb)
+ }
+ EXPORT_SYMBOL_GPL(br_pass_frame_up);
+ 
++static inline bool br_is_promisc_packet(struct sk_buff *skb) {
++
++       switch (skb->protocol) {
++       case htons(ETH_P_IP): {
++               // Allow DHCP traffic
++               struct iphdr *l3_hdr = ip_hdr(skb);
++               if (l3_hdr->protocol == IPPROTO_UDP) {
++                       struct udphdr *l4_hdr = (struct udphdr *) ((char *)l3_hdr + l3_hdr->ihl * 4);
++                       if (ntohs(l4_hdr->source) == 67 || ntohs(l4_hdr->dest) == 67) {
++                               return true;
++                       }
++               }
++               return false;
++       }
++       case htons(ETH_P_IPV6): {
++               // Allow ICMPv6 traffic
++               struct ipv6hdr *l3_hdr = ipv6_hdr(skb);
++               if (l3_hdr->nexthdr == IPPROTO_ICMPV6) {
++                       return true;
++               }
++               return false;
++       }
++       case htons(ETH_P_ARP):
++               // Allow ARP traffic
++               return true;
++       }
++
++       return false;
++}
++
++
+ /* note: already called with rcu_read_lock */
+ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
+ {
+@@ -150,7 +181,9 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
+ 		br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, 0);
+ 
+ 	local_rcv = !!(br->dev->flags & IFF_PROMISC);
+-
++	if (br_is_promisc_packet(skb)) {
++		local_rcv = true;
++	}
+ 	if (is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
+ 		/* by definition the broadcast is also a multicast address */
+ 		if (is_broadcast_ether_addr(eth_hdr(skb)->h_dest)) {
+diff --git a/net/ipv4/netfilter/nf_nat_pptp.c b/net/ipv4/netfilter/nf_nat_pptp.c
+index fab357cc8559..5c696e511816 100644
+--- a/net/ipv4/netfilter/nf_nat_pptp.c
++++ b/net/ipv4/netfilter/nf_nat_pptp.c
+@@ -149,7 +149,8 @@ pptp_outbound_pkt(struct sk_buff *skb,
+ 		 * multiple calls within one control session */
+ 
+ 		/* save original call ID in nat_info */
+-		nat_pptp_info->pns_call_id = ct_pptp_info->pns_call_id;
++		if (!nat_pptp_info->pns_call_id)
++			nat_pptp_info->pns_call_id = ct_pptp_info->pns_call_id;
+ 
+ 		/* don't use tcph->source since we are at a DSTmanip
+ 		 * hook (e.g. PREROUTING) and pkt is not mangled yet */
+diff --git a/net/netfilter/Kconfig b/net/netfilter/Kconfig
+index b513842fc831..f7324fad668b 100644
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -1706,6 +1706,13 @@ config NETFILTER_XT_MATCH_U32
+ 
+ 	  Details and examples are in the kernel module source.
+ 
++config NETFILTER_XT_TARGET_SKIPACCEL
++	tristate '"skipaccel" target support'
++	default m
++	help
++	  This option adds a "skipaccel" target, which allows you to mark
++	  a packet for the acceleration skip.
++
+ endif # NETFILTER_XTABLES
+ 
+ endmenu
+diff --git a/net/netfilter/Makefile b/net/netfilter/Makefile
+index 4219064244cc..ebc2fd1ac42c 100644
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -230,6 +230,7 @@ obj-$(CONFIG_NETFILTER_XT_MATCH_STRING) += xt_string.o
+ obj-$(CONFIG_NETFILTER_XT_MATCH_TCPMSS) += xt_tcpmss.o
+ obj-$(CONFIG_NETFILTER_XT_MATCH_TIME) += xt_time.o
+ obj-$(CONFIG_NETFILTER_XT_MATCH_U32) += xt_u32.o
++obj-$(CONFIG_NETFILTER_XT_TARGET_SKIPACCEL) += xt_skipaccel.o
+ 
+ # ipset
+ obj-$(CONFIG_IP_SET) += ipset/
+diff --git a/net/netfilter/nf_conntrack_netlink.c b/net/netfilter/nf_conntrack_netlink.c
+index 58897a69a2dd..1ca0de4d9363 100644
+--- a/net/netfilter/nf_conntrack_netlink.c
++++ b/net/netfilter/nf_conntrack_netlink.c
+@@ -2005,15 +2005,19 @@ static int ctnetlink_change_timeout(struct nf_conn *ct,
+ static void ctnetlink_change_mark(struct nf_conn *ct,
+ 				    const struct nlattr * const cda[])
+ {
+-	u32 mark, newmark, mask = 0;
++	u32 mark, newmark, mask = 0, old_mark = 0;
+ 
+ 	if (cda[CTA_MARK_MASK])
+ 		mask = ~ntohl(nla_get_be32(cda[CTA_MARK_MASK]));
++	old_mark = ct->mark;
+ 
+ 	mark = ntohl(nla_get_be32(cda[CTA_MARK]));
++
+ 	newmark = (READ_ONCE(ct->mark) & mask) ^ mark;
+ 	if (newmark != READ_ONCE(ct->mark))
+ 		WRITE_ONCE(ct->mark, newmark);
++	if (old_mark != ct->mark)
++               nf_conntrack_event_cache(IPCT_MARK, ct);
+ }
+ #endif
+ 
+diff --git a/net/sched/sch_htb.c b/net/sched/sch_htb.c
+index 19035ef8387f..df9439012465 100644
+--- a/net/sched/sch_htb.c
++++ b/net/sched/sch_htb.c
+@@ -119,6 +119,10 @@ struct htb_class {
+ 	/* token bucket parameters */
+ 	s64			tokens, ctokens;/* current number of tokens */
+ 	s64			t_c;		/* checkpoint time */
++	u32                             qlen;
++	unsigned int    *qdisc_qlen;
++	int		rate_set_once;
++	u32		shared;
+ 
+ 	union {
+ 		struct htb_class_leaf {
+@@ -182,6 +186,10 @@ struct htb_sched {
+ 	bool			offload;
+ };
+ 
++#define SHARED_GROUPS 16
++atomic_t rate_multiplier[SHARED_GROUPS] = ATOMIC_INIT(0);
++
++
+ /* find class in global hash table using given handle */
+ static inline struct htb_class *htb_find(u32 handle, struct Qdisc *sch)
+ {
+@@ -647,6 +655,11 @@ static int htb_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+ 		return ret;
+ 	} else {
+ 		htb_activate(q, cl);
++		cl->qlen++;
++		if (cl->rate_set_once == false) {
++			cl->rate_set_once = true;
++			atomic_inc(&rate_multiplier[cl->shared]);
++		}
+ 	}
+ 
+ 	sch->qstats.backlog += len;
+@@ -701,7 +714,23 @@ static void htb_charge_class(struct htb_sched *q, struct htb_class *cl,
+ 	int bytes = qdisc_pkt_len(skb);
+ 	enum htb_cmode old_mode;
+ 	s64 diff;
++	int mult;
+ 
++	if (cl->shared == 0)
++		goto skip_shared;
++
++	mult = atomic_read(&rate_multiplier[cl->shared]);
++	if (mult > 0) {
++		bytes *= mult;
++		if (bytes <= 0) {
++			bytes = qdisc_pkt_len(skb);
++			printk("HTB error: bytes less then 0 after multiply\n");
++		}
++	} else {
++		printk("HTB error: multiplier not within bounds: %d\n", mult);
++	}
++
++skip_shared:
+ 	while (cl) {
+ 		diff = min_t(s64, q->now - cl->t_c, cl->mbuffer);
+ 		if (cl->level >= level) {
+@@ -875,7 +904,7 @@ static struct sk_buff *htb_dequeue_tree(struct htb_sched *q, const int prio,
+ 	struct htb_class *cl, *start;
+ 	struct htb_level *hlevel = &q->hlevel[level];
+ 	struct htb_prio *hprio = &hlevel->hprio[prio];
+-
++	unsigned int qlen_tmp;
+ 	/* look initial class up in the row */
+ 	start = cl = htb_lookup_leaf(hprio, prio);
+ 
+@@ -904,10 +933,16 @@ static struct sk_buff *htb_dequeue_tree(struct htb_sched *q, const int prio,
+ 			cl = next;
+ 			goto next;
+ 		}
+-
++		qlen_tmp = *cl->qdisc_qlen;
+ 		skb = cl->leaf.q->dequeue(cl->leaf.q);
+-		if (likely(skb != NULL))
++		if (likely(skb != NULL)) {
++			// the dequeue above sometimes also decreases sch->q.qlen by 1
++			// (cl->qdisc_qlen points to it), without any obvious reason when
++			// that happens, so qlen for this class should be decreased as well
++			cl->qlen -= qlen_tmp - *cl->qdisc_qlen;
+ 			break;
++		}
++
+ 
+ 		qdisc_warn_nonwc("htb", cl->leaf.q);
+ 		htb_next_rb_node(level ? &cl->parent->inner.clprio[prio].ptr:
+@@ -930,6 +965,12 @@ static struct sk_buff *htb_dequeue_tree(struct htb_sched *q, const int prio,
+ 		if (!cl->leaf.q->q.qlen)
+ 			htb_deactivate(q, cl);
+ 		htb_charge_class(q, cl, level, skb);
++		cl->qlen--;
++		if (cl->qlen < 1 && cl->rate_set_once == true) {
++			// one less qdisc that needs bandwidth
++			cl->rate_set_once = false;
++			atomic_dec(&rate_multiplier[cl->shared]);
++		}
+ 	}
+ 	return skb;
+ }
+@@ -1010,6 +1051,12 @@ static void htb_reset(struct Qdisc *sch)
+ 			}
+ 			cl->prio_activity = 0;
+ 			cl->cmode = HTB_CAN_SEND;
++			cl->qlen = 0;
++			if (cl->qlen < 1 && cl->rate_set_once == true) {
++				// one less qdisc that needs bandwidth
++				cl->rate_set_once = false;
++				atomic_dec(&rate_multiplier[cl->shared]);
++			}
+ 		}
+ 	}
+ 	qdisc_watchdog_cancel(&q->watchdog);
+@@ -1266,6 +1313,7 @@ static int htb_dump_class(struct Qdisc *sch, unsigned long arg,
+ 	opt.quantum = cl->quantum;
+ 	opt.prio = cl->prio;
+ 	opt.level = cl->level;
++	opt.shared = cl->shared;
+ 	if (nla_put(skb, TCA_HTB_PARMS, sizeof(opt), &opt))
+ 		goto nla_put_failure;
+ 	if (q->offload && nla_put_flag(skb, TCA_HTB_OFFLOAD))
+@@ -1604,6 +1652,11 @@ static void htb_destroy_class(struct Qdisc *sch, struct htb_class *cl)
+ 		WARN_ON(!cl->leaf.q);
+ 		qdisc_put(cl->leaf.q);
+ 	}
++	if (cl->rate_set_once == true) {
++		cl->rate_set_once = false;
++		atomic_dec(&rate_multiplier[cl->shared]);
++	}
++
+ 	gen_kill_estimator(&cl->rate_est);
+ 	tcf_block_put(cl->block);
+ 	kfree(cl);
+@@ -2045,6 +2098,12 @@ static int htb_change_class(struct Qdisc *sch, u32 classid,
+ 
+ 	cl->buffer = PSCHED_TICKS2NS(hopt->buffer);
+ 	cl->cbuffer = PSCHED_TICKS2NS(hopt->cbuffer);
++	cl->qdisc_qlen = &sch->q.qlen;
++	if (cl->rate_set_once == true) {
++		atomic_dec(&rate_multiplier[cl->shared]);
++		atomic_inc(&rate_multiplier[hopt->shared]);
++	}
++	cl->shared = hopt->shared;
+ 
+ 	sch_tree_unlock(sch);
+ 	qdisc_put(parent_qdisc);
+diff --git a/net/wireless/nl80211.c b/net/wireless/nl80211.c
+index f6700be7b8a5..e1037b574566 100644
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -4089,7 +4089,6 @@ static int nl80211_dump_interface(struct sk_buff *skb, struct netlink_callback *
+ 			}
+ 			if_idx++;
+ 		}
+-
+ 		if_start = 0;
+ 		wp_idx++;
+ 	}
+-- 
+2.34.1
+diff --git a/net/netfilter/xt_skipaccel.c b/net/netfilter/xt_skipaccel.c
+new file mode 100644
+index 000000000000..75d6461cd1db
+--- /dev/null
++++ b/net/netfilter/xt_skipaccel.c
+@@ -0,0 +1,49 @@
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <linux/netfilter/x_tables.h>
++
++MODULE_LICENSE("Dual BSD/GPL");
++
++MODULE_DESCRIPTION("xtables skip accel module");
++MODULE_ALIAS("xt_skipaccel");
++
++static unsigned int
++skipaccel_tg(struct sk_buff *skb, const struct xt_action_param *par)
++{
++  skb->dp_flags |= DP_FLAG_SKIPACCEL;
++  return XT_CONTINUE;
++}
++
++static struct xt_target skipaccel_tg_reg __read_mostly = {
++  .name = "skipaccel",
++  .revision = 0,
++  .family = NFPROTO_UNSPEC,
++  .target = skipaccel_tg,
++  .me = THIS_MODULE,
++};
++
++static struct xt_target skipaccel_br_tg_reg __read_mostly = {
++  .name = "skipaccel",
++  .revision = 0,
++  .family = NFPROTO_BRIDGE,
++  .target = skipaccel_tg,
++  .me = THIS_MODULE,
++};
++
++static int __init skipaccel_tg_init(void)
++{
++  return xt_register_target(&skipaccel_tg_reg) || xt_register_target(&skipaccel_br_tg_reg);
++}
++
++static void __exit skipaccel_tg_exit(void)
++{
++  xt_unregister_target(&skipaccel_tg_reg);
++  xt_unregister_target(&skipaccel_br_tg_reg);
++}
++
++module_init(skipaccel_tg_init);
++module_exit(skipaccel_tg_exit);
+--
+2.34.1

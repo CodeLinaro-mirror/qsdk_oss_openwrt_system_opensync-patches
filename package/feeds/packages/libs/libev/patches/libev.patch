@@ -122,10 +122,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/ev_trace.c
 @@ -0,0 +1,40 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#include "ev_trace.h"
 +#include "ev.h"
 +
@@ -165,10 +165,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/ev_trace.h
 @@ -0,0 +1,36 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#ifndef EV_TRACE_H_
 +#define EV_TRACE_H_
 +

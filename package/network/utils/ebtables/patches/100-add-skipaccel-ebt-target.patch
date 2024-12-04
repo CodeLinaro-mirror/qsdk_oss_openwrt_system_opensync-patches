@@ -11,7 +11,7 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 +/*
 +* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
 +* SPDX-License-Identifier: ISC
-+/*
++*/
 +#include "../include/ebtables_u.h"
 +#include <stdio.h>
 +#include <getopt.h>

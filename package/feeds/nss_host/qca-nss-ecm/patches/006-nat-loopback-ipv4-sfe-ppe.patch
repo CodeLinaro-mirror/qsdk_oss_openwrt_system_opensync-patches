@@ -42,10 +42,10 @@ Signed-off-by: Deepak Kumar <quic_deepaku@quicinc.com>
 +		return false;
 +
 +	nf_bridge = nf_bridge_info_get(skb);
-+	if(!nf_bridge || !nf_bridge->physindev || !nf_bridge->physoutdev)
++	if(!nf_bridge || !nf_bridge->physoutdev)
 +		return false;
 +
-+	if (!ecm_front_end_is_bridge_port(nf_bridge->physindev) || !ecm_front_end_is_bridge_port(nf_bridge->physoutdev))
++	if (!ecm_front_end_is_bridge_port(nf_bridge->physoutdev))
 +		return false;
 +
 +	orig_tuple = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;

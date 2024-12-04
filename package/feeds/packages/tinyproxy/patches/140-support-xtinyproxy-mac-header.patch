@@ -205,10 +205,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/src/nf_util_neigh.c
 @@ -0,0 +1,403 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#include <stdio.h>
 +#include <stdarg.h>
 +#include <stdlib.h>
@@ -611,10 +611,10 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 --- /dev/null
 +++ b/src/nf_util_neigh.h
 @@ -0,0 +1,63 @@
-+#
-+# Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
-+# SPDX-License-Identifier: ISC
-+#
++/*
++* Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++* SPDX-License-Identifier: ISC
++*/
 +#ifndef NF_UTILS_H_INCLUDED
 +#define NF_UTILS_H_INCLUDED
 +
