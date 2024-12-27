@@ -18,7 +18,7 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 +
 +static struct option opts[] =
 +{
-+        { "skipaccel-target" , required_argument, 0, 0},
++//        { "skipaccel-target" , required_argument, 0, 0},
 +        { 0 }
 +};
 +
@@ -55,7 +55,7 @@ Signed-off-by: Atchaya R <quic_ratchaya@quicinc.com>
 +static int compare(const struct ebt_entry_target *t1,
 +   const struct ebt_entry_target *t2)
 +{
-+    return 0;
++    return 1;
 +}
 +
 +static struct ebt_u_target skipaccel_target =
